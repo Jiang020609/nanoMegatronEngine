@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+
 import torch
 
 from nano_megatron_engine.engine import Trainer
@@ -10,15 +12,28 @@ from nano_megatron_engine.utils.seed import set_seed
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Train tiny GPT for a few CPU-friendly steps.")
+    parser.add_argument("--tensor-parallel-size", type=int, default=1)
+    args = parser.parse_args()
+
     set_seed(42)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    config = GPTConfig(vocab_size=64, block_size=16, n_layer=2, n_head=2, n_embd=32, dropout=0.0)
+    config = GPTConfig(
+        vocab_size=64,
+        block_size=16,
+        n_layer=2,
+        n_head=2,
+        n_embd=32,
+        dropout=0.0,
+        tensor_parallel_size=args.tensor_parallel_size,
+    )
     model = GPTModel(config)
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-3)
     trainer = Trainer(model, optimizer, micro_batch_size=4, grad_clip_norm=1.0, device=device)
 
     batch = torch.randint(0, config.vocab_size, (8, config.block_size), device=device)
     print(f"Training tiny GPT on {device} for 20 steps")
+    print(f"tensor_parallel_size={config.tensor_parallel_size}")
     first_loss = None
     final_loss = None
     for step in range(1, 21):
@@ -33,4 +48,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

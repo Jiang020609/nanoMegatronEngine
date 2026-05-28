@@ -52,8 +52,10 @@ pytest
 
 ```bash
 python examples/train_tiny_gpt.py
+python examples/train_tiny_gpt.py --tensor-parallel-size 2
 python examples/bench_microbatch.py
 python examples/bench_parallel_linear.py
+python examples/compare_tp_mlp.py
 ```
 
 ## v0.2 Fake Tensor Parallelism
@@ -87,9 +89,34 @@ pytest
 python examples/bench_parallel_linear.py
 ```
 
-## v0.3 Direction
+## v0.3 Fake Tensor Parallel MLP
 
-- Add fake tensor parallel `ColumnParallelLinear` and `RowParallelLinear`.
-- Integrate fake TP layers into the GPT MLP.
-- Add a config flag such as `tensor_parallel_size`.
+v0.3 wires the fake tensor-parallel linear layers into the GPT MLP path. With
+`tensor_parallel_size=1`, the model keeps the original dense `nn.Linear` MLP.
+With `tensor_parallel_size>1`, each transformer MLP uses:
+
+- `ColumnParallelLinear` for the expansion projection from hidden size to the
+  4x intermediate size. This shards output features and concatenates the local
+  outputs in this single process.
+- `GELU` activation.
+- `RowParallelLinear` for the projection back to hidden size. This shards input
+  features and sums partial outputs before returning to the residual stream.
+
+This remains an educational fake TP implementation. It does not use
+`torch.distributed`, NCCL, process groups, rank-local parameters, or real
+multi-GPU communication. Benchmark numbers are useful for correctness checks
+and intuition only, not for claiming speedup.
+
+Try the MLP comparison and TP training smoke test with:
+
+```bash
+python examples/compare_tp_mlp.py
+python examples/train_tiny_gpt.py --tensor-parallel-size 2
+pytest
+```
+
+## v0.4 Direction
+
+- Add fake TP support to attention projections.
+- Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.

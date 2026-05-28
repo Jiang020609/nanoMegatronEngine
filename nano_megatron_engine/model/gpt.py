@@ -9,6 +9,7 @@ from torch.nn import functional as F
 from nano_megatron_engine.memory.activation_checkpoint import checkpoint_block
 from nano_megatron_engine.model.config import GPTConfig
 from nano_megatron_engine.model.transformer import TransformerBlock
+from nano_megatron_engine.parallel import ColumnParallelLinear, RowParallelLinear
 
 
 class GPTModel(nn.Module):
@@ -78,9 +79,19 @@ class GPTModel(nn.Module):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
+        elif isinstance(module, ColumnParallelLinear):
+            for weight in module.weight_shards:
+                nn.init.normal_(weight, mean=0.0, std=0.02)
+            if module.bias_shards is not None:
+                for bias in module.bias_shards:
+                    nn.init.zeros_(bias)
+        elif isinstance(module, RowParallelLinear):
+            for weight in module.weight_shards:
+                nn.init.normal_(weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
         elif isinstance(module, nn.LayerNorm):
             nn.init.ones_(module.weight)
             nn.init.zeros_(module.bias)
-
