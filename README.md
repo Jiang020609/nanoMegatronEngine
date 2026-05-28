@@ -57,6 +57,7 @@ python examples/bench_microbatch.py
 python examples/bench_parallel_linear.py
 python examples/compare_tp_mlp.py
 python examples/compare_tp_attention.py
+python examples/compare_tp_embeddings_lm_head.py
 ```
 
 ## v0.2 Fake Tensor Parallelism
@@ -128,8 +129,6 @@ sharded across fake TP shards:
 - The attention output projection uses row-parallel-style partial outputs, and
   output bias is applied once.
 
-Embeddings and the LM head are still dense unless implemented separately.
-
 This is still single-process fake tensor parallelism. It does not use
 `torch.distributed`, NCCL, process groups, rank-local process state, or real
 multi-GPU communication. The examples are for correctness and intuition, not
@@ -142,7 +141,37 @@ python examples/compare_tp_attention.py
 pytest
 ```
 
-## v0.5 Direction
+## v0.5 Fake Vocab Parallel Embeddings And LM Head
+
+v0.5 adds fake TP support to token embeddings and the LM head:
+
+- Vocab-parallel token embeddings split vocab rows across fake shards using
+  contiguous ranges. Uneven vocab sizes are supported, so `vocab_size=65` and
+  `tensor_parallel_size=2` becomes `[0, 33)` and `[33, 65)`.
+- Each embedding shard only handles token ids in its local vocab range. Outputs
+  from all shards are summed back into the usual `[batch, seq, hidden_size]`
+  tensor.
+- The vocab-parallel LM head splits the output vocab dimension across fake
+  shards, computes local logits, then gathers them back into full
+  `[batch, seq, vocab_size]` logits.
+- The existing GPT embedding and LM-head weight tying is preserved by sharing
+  vocab shard parameters.
+
+v0.3 added fake TP MLP layers, v0.4 added fake TP attention projections, and
+v0.5 extends that teaching path to the vocabulary-facing layers.
+
+This remains single-process fake tensor parallelism. It does not use
+`torch.distributed`, NCCL, process groups, rank-local process state, or real
+multi-GPU communication, and it does not claim speedups.
+
+Try the vocab comparison with:
+
+```bash
+python examples/compare_tp_embeddings_lm_head.py
+pytest
+```
+
+## v0.6 Direction
 
 - Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.

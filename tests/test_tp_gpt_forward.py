@@ -4,7 +4,12 @@ from torch import nn
 from nano_megatron_engine.model import GPTConfig, GPTModel
 from nano_megatron_engine.model.attention import CausalSelfAttention
 from nano_megatron_engine.model.mlp import MLP
-from nano_megatron_engine.parallel import ColumnParallelLinear, RowParallelLinear
+from nano_megatron_engine.parallel import (
+    ColumnParallelLinear,
+    RowParallelLinear,
+    VocabParallelEmbedding,
+    VocabParallelLMHead,
+)
 from nano_megatron_engine.parallel.fake_tp import split_tensor_along_dim
 
 
@@ -86,7 +91,7 @@ def test_dense_gpt_logits_match_fake_tp_gpt_logits_after_weight_copy():
 
 def copy_dense_gpt_to_tp_gpt(dense: GPTModel, tp_model: GPTModel) -> None:
     with torch.no_grad():
-        tp_model.token_embedding.weight.copy_(dense.token_embedding.weight)
+        copy_dense_embedding_to_tp_embedding(dense.token_embedding, tp_model.token_embedding)
         tp_model.position_embedding.weight.copy_(dense.position_embedding.weight)
         tp_model.ln_f.weight.copy_(dense.ln_f.weight)
         tp_model.ln_f.bias.copy_(dense.ln_f.bias)
@@ -98,6 +103,16 @@ def copy_dense_gpt_to_tp_gpt(dense: GPTModel, tp_model: GPTModel) -> None:
             tp_block.ln_2.bias.copy_(dense_block.ln_2.bias)
             copy_dense_attention_to_tp_attention(dense_block.attn, tp_block.attn)
             copy_dense_mlp_to_tp_mlp(dense_block.mlp, tp_block.mlp)
+
+
+def copy_dense_embedding_to_tp_embedding(dense_embedding: nn.Embedding, tp_embedding: nn.Module) -> None:
+    if isinstance(tp_embedding, nn.Embedding):
+        tp_embedding.weight.copy_(dense_embedding.weight)
+        return
+
+    assert isinstance(tp_embedding, VocabParallelEmbedding)
+    for shard, (start, end) in zip(tp_embedding.weight_shards, tp_embedding.vocab_ranges):
+        shard.copy_(dense_embedding.weight[start:end])
 
 
 def copy_dense_attention_to_tp_attention(dense: CausalSelfAttention, tp_attention: CausalSelfAttention) -> None:
