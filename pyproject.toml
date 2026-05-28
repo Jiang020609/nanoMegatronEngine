@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nano-megatron-engine"
-version = "0.3.0"
+version = "0.4.0"
 description = "A slim Megatron-style dense GPT training engine for education."
 readme = "README.md"
 requires-python = ">=3.10"

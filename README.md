@@ -56,6 +56,7 @@ python examples/train_tiny_gpt.py --tensor-parallel-size 2
 python examples/bench_microbatch.py
 python examples/bench_parallel_linear.py
 python examples/compare_tp_mlp.py
+python examples/compare_tp_attention.py
 ```
 
 ## v0.2 Fake Tensor Parallelism
@@ -115,8 +116,33 @@ python examples/train_tiny_gpt.py --tensor-parallel-size 2
 pytest
 ```
 
-## v0.4 Direction
+## v0.4 Fake Tensor Parallel Attention
 
-- Add fake TP support to attention projections.
+v0.4 adds fake TP support to GPT attention projections. Attention heads are
+sharded across fake TP shards:
+
+- `num_heads` must be divisible by `tensor_parallel_size`.
+- Each shard owns `local_heads = num_heads / tensor_parallel_size`.
+- QKV rows are sharded by local Q, K, and V heads, not by blindly splitting the
+  full `3 * hidden_size` output dimension.
+- The attention output projection uses row-parallel-style partial outputs, and
+  output bias is applied once.
+
+Embeddings and the LM head are still dense unless implemented separately.
+
+This is still single-process fake tensor parallelism. It does not use
+`torch.distributed`, NCCL, process groups, rank-local process state, or real
+multi-GPU communication. The examples are for correctness and intuition, not
+for speedup claims.
+
+Try the attention comparison with:
+
+```bash
+python examples/compare_tp_attention.py
+pytest
+```
+
+## v0.5 Direction
+
 - Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.

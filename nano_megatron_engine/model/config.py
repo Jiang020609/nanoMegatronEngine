@@ -45,6 +45,11 @@ class GPTConfig:
                 f"{self.mlp_hidden_size} must be divisible by tensor_parallel_size="
                 f"{self.tensor_parallel_size}"
             )
+        if self.tensor_parallel_size > 1 and self.n_head % self.tensor_parallel_size != 0:
+            raise ValueError(
+                f"n_head={self.n_head} must be divisible by tensor_parallel_size="
+                f"{self.tensor_parallel_size}"
+            )
 
     @classmethod
     def from_dict(cls, values: dict[str, object]) -> "GPTConfig":

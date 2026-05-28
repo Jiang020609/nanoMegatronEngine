@@ -7,6 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from nano_megatron_engine.memory.activation_checkpoint import checkpoint_block
+from nano_megatron_engine.model.attention import CausalSelfAttention
 from nano_megatron_engine.model.config import GPTConfig
 from nano_megatron_engine.model.transformer import TransformerBlock
 from nano_megatron_engine.parallel import ColumnParallelLinear, RowParallelLinear
@@ -90,6 +91,12 @@ class GPTModel(nn.Module):
                 nn.init.normal_(weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
+        elif isinstance(module, CausalSelfAttention):
+            if hasattr(module, "qkv_weight_shards"):
+                for weight in module.qkv_weight_shards:
+                    nn.init.normal_(weight, mean=0.0, std=0.02)
+                for bias in module.qkv_bias_shards:
+                    nn.init.zeros_(bias)
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
         elif isinstance(module, nn.LayerNorm):

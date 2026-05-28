@@ -17,3 +17,14 @@ def test_invalid_tensor_parallel_size_raises():
 def test_incompatible_mlp_intermediate_size_raises():
     with pytest.raises(ValueError, match="MLP intermediate_size=40 must be divisible"):
         GPTConfig(n_embd=10, n_head=2, tensor_parallel_size=3)
+
+
+def test_valid_attention_head_tensor_parallel_config():
+    config = GPTConfig(n_embd=16, n_head=4, tensor_parallel_size=2)
+
+    assert config.tensor_parallel_size == 2
+
+
+def test_incompatible_attention_heads_raise():
+    with pytest.raises(ValueError, match="n_head=3 must be divisible by tensor_parallel_size=2"):
+        GPTConfig(n_embd=24, n_head=3, tensor_parallel_size=2)
