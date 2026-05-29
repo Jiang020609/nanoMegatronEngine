@@ -71,6 +71,7 @@ python examples/compare_tp_attention.py
 python examples/compare_tp_embeddings_lm_head.py
 python examples/inspect_fake_collectives.py
 python examples/inspect_distributed_collectives.py
+python examples/compare_distributed_parallel_linear.py --spawn 2
 ```
 
 ## v0.2 Fake Tensor Parallelism
@@ -245,6 +246,7 @@ Inspect the CPU/Gloo wrappers with:
 ```bash
 python examples/inspect_distributed_collectives.py
 python examples/inspect_distributed_collectives.py --spawn 2
+python examples/compare_distributed_parallel_linear.py --spawn 2
 torchrun --standalone --nproc_per_node=2 examples/inspect_distributed_collectives.py
 ```
 
@@ -252,6 +254,11 @@ The `--spawn 2` form is a convenient local smoke test when torchrun
 rendezvous behavior differs across PyTorch builds, and it is the recommended
 local demo for the wrapper APIs. Direct torchrun behavior can depend on the
 local PyTorch build and platform.
+
+`compare_distributed_parallel_linear.py` compares dense `nn.Linear` with the
+module-level CPU/Gloo distributed column- and row-parallel linear prototypes.
+The GPT/model path is still not wired into real distributed tensor
+parallelism.
 
 This is not real distributed GPT tensor parallelism. v0.7 does not add NCCL,
 GPU requirements, multi-node orchestration, rank-local GPT parameters, or
