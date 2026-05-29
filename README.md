@@ -36,6 +36,16 @@ Those features are intentionally outside v0.1. This repository focuses on the
 small dense-GPT path: one model, one device, readable code, and tests that make
 the training mechanics explicit.
 
+## Capability Table
+
+| Area | Current support | Limitations |
+| --- | --- | --- |
+| Dense GPT training | CPU-runnable tiny GPT, trainer, microbatching, gradient accumulation, activation checkpointing | Educational scale only |
+| Fake tensor parallel layers | Single-process MLP, attention, embeddings, LM head, and fake collectives | Local tensors only, no process groups |
+| Distributed collectives | Planned for v0.7 as optional CPU/Gloo wrappers in `distributed_collectives.py` | Not used by GPT TP yet; normal pytest must not require distributed setup |
+| Accelerators | CUDA is optional for existing benchmarks | No NCCL, custom CUDA, FP8, or GPU requirement |
+| Performance claims | None | No Megatron-LM parity or speedup claims |
+
 ## Install
 
 ```bash

@@ -97,13 +97,13 @@ def fake_reduce_scatter_sum(
 
 
 def concat_tensor_parallel_outputs(chunks: Sequence[torch.Tensor], dim: int) -> torch.Tensor:
-    """Concatenate fake tensor-parallel outputs."""
+    """Legacy compatibility alias for fake_all_gather."""
 
     return fake_all_gather(chunks, dim=dim)
 
 
 def sum_tensor_parallel_outputs(chunks: Sequence[torch.Tensor]) -> torch.Tensor:
-    """Sum fake tensor-parallel partial outputs."""
+    """Legacy compatibility alias for fake_all_reduce_sum."""
 
     return fake_all_reduce_sum(chunks)
 
