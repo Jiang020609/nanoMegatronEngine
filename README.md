@@ -228,8 +228,11 @@ v0.7 adds optional `torch.distributed` collective wrappers in
 - `get_rank` and `get_world_size` provide small checked accessors.
 
 The fake collectives remain unchanged and the GPT fake TP layers still use the
-single-process fake APIs. Normal training examples and default `pytest` runs do
-not require a distributed environment. The distributed smoke test is opt-in:
+single-process fake APIs. The distributed wrappers are optional low-level APIs
+for learning and smoke-testing collective semantics; they are not wired into
+the GPT model path. CPU/Gloo is the only distributed backend demonstrated right
+now. Normal training examples and default `pytest` runs do not require a
+distributed environment. The distributed smoke test is opt-in:
 
 ```bash
 NME_RUN_DISTRIBUTED_TESTS=1 pytest tests/test_distributed_collectives.py
@@ -244,11 +247,13 @@ torchrun --standalone --nproc_per_node=2 examples/inspect_distributed_collective
 ```
 
 The `--spawn 2` form is a convenient local smoke test when torchrun
-rendezvous behavior differs across PyTorch builds.
+rendezvous behavior differs across PyTorch builds, and it is the recommended
+local demo for the wrapper APIs. Direct torchrun behavior can depend on the
+local PyTorch build and platform.
 
 This is not real distributed GPT tensor parallelism. v0.7 does not add NCCL,
-GPU requirements, custom process groups, rank-local GPT parameters, or speedup
-claims.
+GPU requirements, multi-node orchestration, rank-local GPT parameters, or
+speedup claims.
 
 ## v0.8 Direction
 

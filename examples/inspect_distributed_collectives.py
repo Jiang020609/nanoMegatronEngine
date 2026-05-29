@@ -23,6 +23,8 @@ def main() -> None:
     parser.add_argument("--spawn", type=int, default=0, help="spawn this many local CPU/Gloo worker processes")
     args = parser.parse_args()
 
+    if args.spawn < 0:
+        parser.error("--spawn must be non-negative")
     if args.spawn > 0:
         _spawn_workers(args.spawn)
         return
@@ -69,6 +71,7 @@ def _spawn_workers(world_size: int) -> None:
 
     import torch.multiprocessing as mp
 
+    print(f"Spawning {world_size} local CPU/Gloo worker process(es).", flush=True)
     port = _find_free_port()
     mp.spawn(_spawn_worker, args=(world_size, port), nprocs=world_size, join=True)
 
