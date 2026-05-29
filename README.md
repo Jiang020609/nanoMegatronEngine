@@ -52,8 +52,12 @@ pytest
 
 ```bash
 python examples/train_tiny_gpt.py
+python examples/train_tiny_gpt.py --tensor-parallel-size 2
 python examples/bench_microbatch.py
 python examples/bench_parallel_linear.py
+python examples/compare_tp_mlp.py
+python examples/compare_tp_attention.py
+python examples/compare_tp_embeddings_lm_head.py
 ```
 
 ## v0.2 Fake Tensor Parallelism
@@ -87,9 +91,87 @@ pytest
 python examples/bench_parallel_linear.py
 ```
 
-## v0.3 Direction
+## v0.3 Fake Tensor Parallel MLP
 
-- Add fake tensor parallel `ColumnParallelLinear` and `RowParallelLinear`.
-- Integrate fake TP layers into the GPT MLP.
-- Add a config flag such as `tensor_parallel_size`.
+v0.3 wires the fake tensor-parallel linear layers into the GPT MLP path. With
+`tensor_parallel_size=1`, the model keeps the original dense `nn.Linear` MLP.
+With `tensor_parallel_size>1`, each transformer MLP uses:
+
+- `ColumnParallelLinear` for the expansion projection from hidden size to the
+  4x intermediate size. This shards output features and concatenates the local
+  outputs in this single process.
+- `GELU` activation.
+- `RowParallelLinear` for the projection back to hidden size. This shards input
+  features and sums partial outputs before returning to the residual stream.
+
+This remains an educational fake TP implementation. It does not use
+`torch.distributed`, NCCL, process groups, rank-local parameters, or real
+multi-GPU communication. Benchmark numbers are useful for correctness checks
+and intuition only, not for claiming speedup.
+
+Try the MLP comparison and TP training smoke test with:
+
+```bash
+python examples/compare_tp_mlp.py
+python examples/train_tiny_gpt.py --tensor-parallel-size 2
+pytest
+```
+
+## v0.4 Fake Tensor Parallel Attention
+
+v0.4 adds fake TP support to GPT attention projections. Attention heads are
+sharded across fake TP shards:
+
+- `num_heads` must be divisible by `tensor_parallel_size`.
+- Each shard owns `local_heads = num_heads / tensor_parallel_size`.
+- QKV rows are sharded by local Q, K, and V heads, not by blindly splitting the
+  full `3 * hidden_size` output dimension.
+- The attention output projection uses row-parallel-style partial outputs, and
+  output bias is applied once.
+
+This is still single-process fake tensor parallelism. It does not use
+`torch.distributed`, NCCL, process groups, rank-local process state, or real
+multi-GPU communication. The examples are for correctness and intuition, not
+for speedup claims.
+
+Try the attention comparison with:
+
+```bash
+python examples/compare_tp_attention.py
+pytest
+```
+
+## v0.5 Fake Vocab Parallel Embeddings And LM Head
+
+v0.5 adds fake TP support to token embeddings and the LM head:
+
+- Vocab-parallel token embeddings split vocab rows across fake shards using
+  contiguous ranges. Uneven vocab sizes are supported, so `vocab_size=65` and
+  `tensor_parallel_size=2` becomes `[0, 33)` and `[33, 65)`.
+- Each embedding shard only handles token ids in its local vocab range. Outputs
+  from all shards are summed back into the usual `[batch, seq, hidden_size]`
+  tensor.
+- The vocab-parallel LM head splits the output vocab dimension across fake
+  shards, computes local logits, then gathers them back into full
+  `[batch, seq, vocab_size]` logits.
+- The existing GPT embedding and LM-head weight tying is preserved by sharing
+  vocab shard parameters.
+
+v0.3 added fake TP MLP layers, v0.4 added fake TP attention projections, and
+v0.5 extends that teaching path to the vocabulary-facing layers.
+
+This remains single-process fake tensor parallelism. It does not use
+`torch.distributed`, NCCL, process groups, rank-local process state, or real
+multi-GPU communication, and it does not claim speedups.
+
+Try the vocab comparison with:
+
+```bash
+python examples/compare_tp_embeddings_lm_head.py
+pytest
+```
+
+## v0.6 Direction
+
+- Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.

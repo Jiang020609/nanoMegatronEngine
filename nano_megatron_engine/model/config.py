@@ -20,6 +20,7 @@ class GPTConfig:
     n_embd: int = 64
     dropout: float = 0.0
     use_activation_checkpointing: bool = False
+    tensor_parallel_size: int = 1
 
     def __post_init__(self) -> None:
         if self.vocab_size <= 0:
@@ -36,6 +37,19 @@ class GPTConfig:
             raise ValueError("n_embd must be divisible by n_head")
         if not 0.0 <= self.dropout < 1.0:
             raise ValueError("dropout must be in [0.0, 1.0)")
+        if self.tensor_parallel_size < 1:
+            raise ValueError("tensor_parallel_size must be >= 1")
+        if self.tensor_parallel_size > 1 and self.mlp_hidden_size % self.tensor_parallel_size != 0:
+            raise ValueError(
+                "MLP intermediate_size="
+                f"{self.mlp_hidden_size} must be divisible by tensor_parallel_size="
+                f"{self.tensor_parallel_size}"
+            )
+        if self.tensor_parallel_size > 1 and self.n_head % self.tensor_parallel_size != 0:
+            raise ValueError(
+                f"n_head={self.n_head} must be divisible by tensor_parallel_size="
+                f"{self.tensor_parallel_size}"
+            )
 
     @classmethod
     def from_dict(cls, values: dict[str, object]) -> "GPTConfig":
@@ -43,3 +57,8 @@ class GPTConfig:
 
         return cls(**values)
 
+    @property
+    def mlp_hidden_size(self) -> int:
+        """The 4x intermediate dimension used by the GPT MLP."""
+
+        return 4 * self.n_embd

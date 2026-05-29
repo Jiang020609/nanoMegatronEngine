@@ -7,8 +7,15 @@ from torch import nn
 from torch.nn import functional as F
 
 from nano_megatron_engine.memory.activation_checkpoint import checkpoint_block
+from nano_megatron_engine.model.attention import CausalSelfAttention
 from nano_megatron_engine.model.config import GPTConfig
 from nano_megatron_engine.model.transformer import TransformerBlock
+from nano_megatron_engine.parallel import (
+    ColumnParallelLinear,
+    RowParallelLinear,
+    VocabParallelEmbedding,
+    VocabParallelLMHead,
+)
 
 
 class GPTModel(nn.Module):
@@ -18,15 +25,33 @@ class GPTModel(nn.Module):
         super().__init__()
         self.config = config
 
-        self.token_embedding = nn.Embedding(config.vocab_size, config.n_embd)
+        if config.tensor_parallel_size == 1:
+            self.token_embedding = nn.Embedding(config.vocab_size, config.n_embd)
+        else:
+            self.token_embedding = VocabParallelEmbedding(
+                config.vocab_size,
+                config.n_embd,
+                tp_size=config.tensor_parallel_size,
+            )
         self.position_embedding = nn.Embedding(config.block_size, config.n_embd)
         self.dropout = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layer)])
         self.ln_f = nn.LayerNorm(config.n_embd)
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        if config.tensor_parallel_size == 1:
+            self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        else:
+            self.lm_head = VocabParallelLMHead(
+                config.n_embd,
+                config.vocab_size,
+                tp_size=config.tensor_parallel_size,
+                bias=False,
+            )
 
         self.apply(self._init_weights)
-        self.lm_head.weight = self.token_embedding.weight
+        if config.tensor_parallel_size == 1:
+            self.lm_head.weight = self.token_embedding.weight
+        else:
+            self.lm_head.tie_weight_shards(self.token_embedding.weight_shards)
 
     def forward(
         self,
@@ -78,9 +103,34 @@ class GPTModel(nn.Module):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
+        elif isinstance(module, ColumnParallelLinear):
+            for weight in module.weight_shards:
+                nn.init.normal_(weight, mean=0.0, std=0.02)
+            if module.bias_shards is not None:
+                for bias in module.bias_shards:
+                    nn.init.zeros_(bias)
+        elif isinstance(module, RowParallelLinear):
+            for weight in module.weight_shards:
+                nn.init.normal_(weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, CausalSelfAttention):
+            if hasattr(module, "qkv_weight_shards"):
+                for weight in module.qkv_weight_shards:
+                    nn.init.normal_(weight, mean=0.0, std=0.02)
+                for bias in module.qkv_bias_shards:
+                    nn.init.zeros_(bias)
+        elif isinstance(module, VocabParallelEmbedding):
+            for weight in module.weight_shards:
+                nn.init.normal_(weight, mean=0.0, std=0.02)
+        elif isinstance(module, VocabParallelLMHead):
+            for weight in module.weight_shards:
+                nn.init.normal_(weight, mean=0.0, std=0.02)
+            if module.bias_shards is not None:
+                for bias in module.bias_shards:
+                    nn.init.zeros_(bias)
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
         elif isinstance(module, nn.LayerNorm):
             nn.init.ones_(module.weight)
             nn.init.zeros_(module.bias)
-
