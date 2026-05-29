@@ -202,8 +202,8 @@ communication pattern:
 - `ColumnParallelLinear` uses `FakeShardListCollectives.all_gather` when
   `gather_output=True`.
 - `RowParallelLinear` uses `FakeShardListCollectives.all_reduce_sum`.
-- `VocabParallelEmbedding` uses `fake_all_reduce_sum`.
-- `VocabParallelLMHead` uses `fake_all_gather`.
+- `VocabParallelEmbedding` uses `FakeShardListCollectives.all_reduce_sum`.
+- `VocabParallelLMHead` uses `FakeShardListCollectives.all_gather`.
 
 This is still single-process fake TP. It does not use `torch.distributed`,
 NCCL, process groups, rank-local process state, or real multi-GPU
@@ -278,6 +278,12 @@ collective adapter for tests and education. By default they use
 `FakeShardListCollectives`, so existing GPT/MLP/attention behavior and numerics
 remain unchanged. The rank-local distributed adapter is intentionally not used
 by these fake single-process layers.
+
+`VocabParallelEmbedding` and `VocabParallelLMHead` use the same shard-list
+collective boundary. The embedding sums per-shard masked embedding outputs with
+`all_reduce_sum`, while the LM head gathers per-shard vocab logits with
+`all_gather`. This still does not implement real distributed GPT tensor
+parallelism; rank-local distributed collectives remain separate low-level APIs.
 
 ## v0.8 Direction
 
