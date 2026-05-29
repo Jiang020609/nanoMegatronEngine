@@ -8,9 +8,11 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from nano_megatron_engine.parallel.collective_adapters import (
+    FakeShardListCollectives,
+    ShardListCollectiveProtocol,
+)
 from nano_megatron_engine.parallel.fake_tp import (
-    concat_tensor_parallel_outputs,
-    fake_all_reduce_sum,
     split_tensor_along_dim,
     validate_divisible,
 )
@@ -30,6 +32,7 @@ class RowParallelLinear(nn.Module):
         out_features: int,
         tp_size: int = 2,
         bias: bool = True,
+        collectives: ShardListCollectiveProtocol | None = None,
     ) -> None:
         super().__init__()
         validate_divisible(in_features, tp_size, "in_features")
@@ -39,6 +42,7 @@ class RowParallelLinear(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.tp_size = tp_size
+        self.collectives = collectives if collectives is not None else FakeShardListCollectives()
         self.local_in_features = in_features // tp_size
 
         self.weight_shards = nn.ParameterList(
@@ -55,7 +59,12 @@ class RowParallelLinear(nn.Module):
             nn.init.uniform_(self.bias, -bound, bound)
 
     @classmethod
-    def from_linear(cls, linear: nn.Linear, tp_size: int = 2) -> "RowParallelLinear":
+    def from_linear(
+        cls,
+        linear: nn.Linear,
+        tp_size: int = 2,
+        collectives: ShardListCollectiveProtocol | None = None,
+    ) -> "RowParallelLinear":
         """Create a row-parallel layer with weights copied from nn.Linear."""
 
         layer = cls(
@@ -63,6 +72,7 @@ class RowParallelLinear(nn.Module):
             linear.out_features,
             tp_size=tp_size,
             bias=linear.bias is not None,
+            collectives=collectives,
         )
         layer.to(device=linear.weight.device, dtype=linear.weight.dtype)
 
@@ -87,7 +97,7 @@ class RowParallelLinear(nn.Module):
         )
 
         with torch.no_grad():
-            linear.weight.copy_(concat_tensor_parallel_outputs(list(self.weight_shards), dim=1))
+            linear.weight.copy_(self.collectives.all_gather(list(self.weight_shards), dim=1))
             if self.bias is not None and linear.bias is not None:
                 linear.bias.copy_(self.bias)
         return linear
@@ -101,7 +111,7 @@ class RowParallelLinear(nn.Module):
             F.linear(input_shard, weight, bias=None)
             for input_shard, weight in zip(input_shards, self.weight_shards)
         )
-        output = fake_all_reduce_sum(partial_outputs)
+        output = self.collectives.all_reduce_sum(partial_outputs)
         if self.bias is not None:
             output = output + self.bias
         return output

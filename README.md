@@ -196,11 +196,12 @@ v0.6 introduces explicit fake tensor-parallel collective APIs in `fake_tp.py`:
   contiguous output partition.
 - `partition_range` remains the helper for contiguous, uneven partitioning.
 
-The fake TP layers now call these APIs where it clarifies the Megatron-style
+The fake TP layers call these APIs where it clarifies the Megatron-style
 communication pattern:
 
-- `ColumnParallelLinear` uses `fake_all_gather` when `gather_output=True`.
-- `RowParallelLinear` uses `fake_all_reduce_sum`.
+- `ColumnParallelLinear` uses `FakeShardListCollectives.all_gather` when
+  `gather_output=True`.
+- `RowParallelLinear` uses `FakeShardListCollectives.all_reduce_sum`.
 - `VocabParallelEmbedding` uses `fake_all_reduce_sum`.
 - `VocabParallelLMHead` uses `fake_all_gather`.
 
@@ -271,6 +272,12 @@ speedup claims.
 These adapters are intentionally separate because fake shard-list collectives
 and rank-local distributed collectives do not have identical API contracts.
 Real distributed GPT tensor parallelism is still not implemented.
+
+`ColumnParallelLinear` and `RowParallelLinear` accept an optional shard-list
+collective adapter for tests and education. By default they use
+`FakeShardListCollectives`, so existing GPT/MLP/attention behavior and numerics
+remain unchanged. The rank-local distributed adapter is intentionally not used
+by these fake single-process layers.
 
 ## v0.8 Direction
 
