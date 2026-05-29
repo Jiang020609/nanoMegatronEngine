@@ -43,6 +43,7 @@ the training mechanics explicit.
 | Dense GPT training | CPU-runnable tiny GPT, trainer, microbatching, gradient accumulation, activation checkpointing | Educational scale only |
 | Fake tensor parallel layers | Single-process MLP, attention, embeddings, LM head, and fake collectives | Local tensors only |
 | Distributed collectives | Optional CPU/Gloo wrappers in `distributed_collectives.py` | Not wired into GPT TP; normal pytest does not require distributed setup |
+| Distributed parallel linear prototypes | CPU/Gloo column- and row-parallel linear modules | Module-level only; not wired into GPT/model code |
 | Collective adapters | Explicit fake shard-list and distributed rank-local adapter boundaries | They document semantics; they do not make the APIs interchangeable |
 | Accelerators | CUDA is optional for existing benchmarks | No NCCL, custom CUDA, FP8, or GPU requirement |
 | Performance claims | None | No Megatron-LM parity or speedup claims |
@@ -246,7 +247,6 @@ Inspect the CPU/Gloo wrappers with:
 ```bash
 python examples/inspect_distributed_collectives.py
 python examples/inspect_distributed_collectives.py --spawn 2
-python examples/compare_distributed_parallel_linear.py --spawn 2
 torchrun --standalone --nproc_per_node=2 examples/inspect_distributed_collectives.py
 ```
 
@@ -254,11 +254,6 @@ The `--spawn 2` form is a convenient local smoke test when torchrun
 rendezvous behavior differs across PyTorch builds, and it is the recommended
 local demo for the wrapper APIs. Direct torchrun behavior can depend on the
 local PyTorch build and platform.
-
-`compare_distributed_parallel_linear.py` compares dense `nn.Linear` with the
-module-level CPU/Gloo distributed column- and row-parallel linear prototypes.
-The GPT/model path is still not wired into real distributed tensor
-parallelism.
 
 This is not real distributed GPT tensor parallelism. v0.7 does not add NCCL,
 GPU requirements, multi-node orchestration, rank-local GPT parameters, or
@@ -292,7 +287,34 @@ collective boundary. The embedding sums per-shard masked embedding outputs with
 `all_gather`. This still does not implement real distributed GPT tensor
 parallelism; rank-local distributed collectives remain separate low-level APIs.
 
-## v0.8 Direction
+## v0.8 Distributed Parallel Linear Prototypes
+
+v0.8 adds low-level CPU/Gloo distributed linear prototypes:
+
+- `DistributedColumnParallelLinear` shards output features across ranks. Each
+  rank receives the full input, computes local output features, and can gather
+  the full output with `gather_output=True`.
+- `DistributedRowParallelLinear` shards input features across ranks. Each rank
+  computes a partial output, the partial outputs are summed with CPU/Gloo, and
+  the replicated bias is applied once after the all-reduce.
+- `compare_distributed_parallel_linear.py` compares both modules against dense
+  `torch.nn.Linear` on CPU.
+- Distributed tests are opt-in with `NME_RUN_DISTRIBUTED_TESTS=1`; default
+  `pytest` does not require a distributed environment.
+
+Run the module-level comparison with:
+
+```bash
+python examples/compare_distributed_parallel_linear.py
+python examples/compare_distributed_parallel_linear.py --spawn 2
+NME_RUN_DISTRIBUTED_TESTS=1 pytest tests/test_distributed_collectives.py tests/test_distributed_column_parallel_linear.py tests/test_distributed_row_parallel_linear.py
+```
+
+The fake TP path and GPT/model code remain unchanged. These prototypes are not
+real distributed GPT tensor parallelism and do not add NCCL, GPU requirements,
+multi-node orchestration, or speedup claims.
+
+## v0.9 Direction
 
 - Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.
