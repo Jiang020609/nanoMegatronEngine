@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from nano_megatron_engine.parallel.fake_tp import partition_range
+from nano_megatron_engine.parallel.fake_tp import fake_all_reduce_sum, partition_range
 
 
 class VocabParallelEmbedding(nn.Module):
@@ -57,21 +57,22 @@ class VocabParallelEmbedding(nn.Module):
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         first_weight = self.weight_shards[0]
-        output = torch.zeros(
-            *input_ids.shape,
-            self.embedding_dim,
-            device=first_weight.device,
-            dtype=first_weight.dtype,
-        )
-
+        local_outputs = []
         for weight, (start, end) in zip(self.weight_shards, self.vocab_ranges):
+            local_output = torch.zeros(
+                *input_ids.shape,
+                self.embedding_dim,
+                device=first_weight.device,
+                dtype=first_weight.dtype,
+            )
             if end == start:
+                local_outputs.append(local_output)
                 continue
             mask = (input_ids >= start) & (input_ids < end)
             local_ids = (input_ids - start).masked_fill(~mask, 0)
             local_output = F.embedding(local_ids, weight)
-            output = output + local_output * mask.unsqueeze(-1).to(local_output.dtype)
-        return output
+            local_outputs.append(local_output * mask.unsqueeze(-1).to(local_output.dtype))
+        return fake_all_reduce_sum(local_outputs)
 
     def extra_repr(self) -> str:
         return (

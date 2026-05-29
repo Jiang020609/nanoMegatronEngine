@@ -10,6 +10,7 @@ from torch.nn import functional as F
 
 from nano_megatron_engine.parallel.fake_tp import (
     concat_tensor_parallel_outputs,
+    fake_all_gather,
     split_tensor_along_dim,
     validate_divisible,
 )
@@ -115,7 +116,7 @@ class ColumnParallelLinear(nn.Module):
             for weight, bias in zip(self.weight_shards, self._iter_bias_shards())
         )
         if self.gather_output:
-            return concat_tensor_parallel_outputs(local_outputs, dim=-1)
+            return fake_all_gather(local_outputs, dim=-1)
         return local_outputs
 
     def extra_repr(self) -> str:
@@ -129,4 +130,3 @@ class ColumnParallelLinear(nn.Module):
         if self.bias_shards is None:
             return tuple(None for _ in range(self.tp_size))
         return tuple(self.bias_shards)
-

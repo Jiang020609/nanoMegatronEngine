@@ -10,8 +10,8 @@ from torch.nn import functional as F
 
 from nano_megatron_engine.parallel.fake_tp import (
     concat_tensor_parallel_outputs,
+    fake_all_reduce_sum,
     split_tensor_along_dim,
-    sum_tensor_parallel_outputs,
     validate_divisible,
 )
 
@@ -101,7 +101,7 @@ class RowParallelLinear(nn.Module):
             F.linear(input_shard, weight, bias=None)
             for input_shard, weight in zip(input_shards, self.weight_shards)
         )
-        output = sum_tensor_parallel_outputs(partial_outputs)
+        output = fake_all_reduce_sum(partial_outputs)
         if self.bias is not None:
             output = output + self.bias
         return output
@@ -111,4 +111,3 @@ class RowParallelLinear(nn.Module):
             f"in_features={self.in_features}, out_features={self.out_features}, "
             f"tp_size={self.tp_size}, bias={self.bias is not None}"
         )
-

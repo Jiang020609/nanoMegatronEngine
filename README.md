@@ -58,6 +58,7 @@ python examples/bench_parallel_linear.py
 python examples/compare_tp_mlp.py
 python examples/compare_tp_attention.py
 python examples/compare_tp_embeddings_lm_head.py
+python examples/inspect_fake_collectives.py
 ```
 
 ## v0.2 Fake Tensor Parallelism
@@ -171,7 +172,38 @@ python examples/compare_tp_embeddings_lm_head.py
 pytest
 ```
 
-## v0.6 Direction
+## v0.6 Fake Collective APIs
+
+v0.6 introduces explicit fake tensor-parallel collective APIs in `fake_tp.py`:
+
+- `fake_all_gather` simulates gathering ordered shard outputs by concatenating
+  tensors along a chosen dimension. It supports uneven sizes along the gather
+  dimension.
+- `fake_all_reduce_sum` simulates summing partial outputs across fake shards.
+- `fake_reduce_scatter_sum` simulates a sum followed by returning one
+  contiguous output partition.
+- `partition_range` remains the helper for contiguous, uneven partitioning.
+
+The fake TP layers now call these APIs where it clarifies the Megatron-style
+communication pattern:
+
+- `ColumnParallelLinear` uses `fake_all_gather` when `gather_output=True`.
+- `RowParallelLinear` uses `fake_all_reduce_sum`.
+- `VocabParallelEmbedding` uses `fake_all_reduce_sum`.
+- `VocabParallelLMHead` uses `fake_all_gather`.
+
+This is still single-process fake TP. It does not use `torch.distributed`,
+NCCL, process groups, rank-local process state, or real multi-GPU
+communication, and it does not claim speedups.
+
+Inspect the fake collectives with:
+
+```bash
+python examples/inspect_fake_collectives.py
+pytest
+```
+
+## v0.7 Direction
 
 - Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.

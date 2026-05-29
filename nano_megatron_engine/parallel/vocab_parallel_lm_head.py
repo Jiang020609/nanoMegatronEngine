@@ -8,7 +8,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from nano_megatron_engine.parallel.fake_tp import concat_tensor_parallel_outputs, partition_range
+from nano_megatron_engine.parallel.fake_tp import fake_all_gather, partition_range
 
 
 class VocabParallelLMHead(nn.Module):
@@ -74,7 +74,7 @@ class VocabParallelLMHead(nn.Module):
         self.weight_shards = weight_shards
 
     def merge_to_linear(self) -> nn.Linear:
-        weight = concat_tensor_parallel_outputs(list(self.weight_shards), dim=0)
+        weight = fake_all_gather(list(self.weight_shards), dim=0)
         linear = nn.Linear(
             self.hidden_size,
             self.vocab_size,
@@ -85,7 +85,7 @@ class VocabParallelLMHead(nn.Module):
         with torch.no_grad():
             linear.weight.copy_(weight)
             if self.bias_shards is not None and linear.bias is not None:
-                linear.bias.copy_(concat_tensor_parallel_outputs(list(self.bias_shards), dim=0))
+                linear.bias.copy_(fake_all_gather(list(self.bias_shards), dim=0))
         return linear
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -93,7 +93,7 @@ class VocabParallelLMHead(nn.Module):
             F.linear(x, weight, bias)
             for weight, bias in zip(self.weight_shards, self._iter_bias_shards())
         )
-        return concat_tensor_parallel_outputs(local_logits, dim=-1)
+        return fake_all_gather(local_logits, dim=-1)
 
     def extra_repr(self) -> str:
         return (
