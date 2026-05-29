@@ -41,8 +41,8 @@ the training mechanics explicit.
 | Area | Current support | Limitations |
 | --- | --- | --- |
 | Dense GPT training | CPU-runnable tiny GPT, trainer, microbatching, gradient accumulation, activation checkpointing | Educational scale only |
-| Fake tensor parallel layers | Single-process MLP, attention, embeddings, LM head, and fake collectives | Local tensors only, no process groups |
-| Distributed collectives | Planned for v0.7 as optional CPU/Gloo wrappers in `distributed_collectives.py` | Not used by GPT TP yet; normal pytest must not require distributed setup |
+| Fake tensor parallel layers | Single-process MLP, attention, embeddings, LM head, and fake collectives | Local tensors only |
+| Distributed collectives | Optional CPU/Gloo wrappers in `distributed_collectives.py` | Not wired into GPT TP; normal pytest does not require distributed setup |
 | Accelerators | CUDA is optional for existing benchmarks | No NCCL, custom CUDA, FP8, or GPU requirement |
 | Performance claims | None | No Megatron-LM parity or speedup claims |
 
@@ -69,6 +69,7 @@ python examples/compare_tp_mlp.py
 python examples/compare_tp_attention.py
 python examples/compare_tp_embeddings_lm_head.py
 python examples/inspect_fake_collectives.py
+python examples/inspect_distributed_collectives.py
 ```
 
 ## v0.2 Fake Tensor Parallelism
@@ -213,7 +214,43 @@ python examples/inspect_fake_collectives.py
 pytest
 ```
 
-## v0.7 Direction
+## v0.7 Optional CPU/Gloo Distributed Collectives
+
+v0.7 adds optional `torch.distributed` collective wrappers in
+`distributed_collectives.py`:
+
+- `init_distributed_from_env` initializes a CPU/Gloo process group from
+  torchrun-style environment variables.
+- `distributed_all_gather` gathers rank-local tensors, including uneven sizes
+  along the gather dimension.
+- `distributed_all_reduce_sum` sums same-shaped tensors across ranks.
+- `distributed_reduce_scatter_sum` uses a simple all-reduce-plus-slice fallback.
+- `get_rank` and `get_world_size` provide small checked accessors.
+
+The fake collectives remain unchanged and the GPT fake TP layers still use the
+single-process fake APIs. Normal training examples and default `pytest` runs do
+not require a distributed environment. The distributed smoke test is opt-in:
+
+```bash
+NME_RUN_DISTRIBUTED_TESTS=1 pytest tests/test_distributed_collectives.py
+```
+
+Inspect the CPU/Gloo wrappers with:
+
+```bash
+python examples/inspect_distributed_collectives.py
+python examples/inspect_distributed_collectives.py --spawn 2
+torchrun --standalone --nproc_per_node=2 examples/inspect_distributed_collectives.py
+```
+
+The `--spawn 2` form is a convenient local smoke test when torchrun
+rendezvous behavior differs across PyTorch builds.
+
+This is not real distributed GPT tensor parallelism. v0.7 does not add NCCL,
+GPU requirements, custom process groups, rank-local GPT parameters, or speedup
+claims.
+
+## v0.8 Direction
 
 - Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.
