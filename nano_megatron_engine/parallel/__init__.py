@@ -1,6 +1,12 @@
 """Educational tensor-parallel layers and collective helpers."""
 
 from nano_megatron_engine.parallel.column_parallel_linear import ColumnParallelLinear
+from nano_megatron_engine.parallel.collective_adapters import (
+    DistributedRankLocalCollectives,
+    FakeShardListCollectives,
+    RankLocalCollectiveProtocol,
+    ShardListCollectiveProtocol,
+)
 from nano_megatron_engine.parallel.distributed_collectives import (
     distributed_all_gather,
     distributed_all_reduce_sum,
@@ -25,7 +31,11 @@ from nano_megatron_engine.parallel.vocab_parallel_lm_head import VocabParallelLM
 
 __all__ = [
     "ColumnParallelLinear",
+    "DistributedRankLocalCollectives",
+    "FakeShardListCollectives",
+    "RankLocalCollectiveProtocol",
     "RowParallelLinear",
+    "ShardListCollectiveProtocol",
     "VocabParallelEmbedding",
     "VocabParallelLMHead",
     "distributed_all_gather",

@@ -43,6 +43,7 @@ the training mechanics explicit.
 | Dense GPT training | CPU-runnable tiny GPT, trainer, microbatching, gradient accumulation, activation checkpointing | Educational scale only |
 | Fake tensor parallel layers | Single-process MLP, attention, embeddings, LM head, and fake collectives | Local tensors only |
 | Distributed collectives | Optional CPU/Gloo wrappers in `distributed_collectives.py` | Not wired into GPT TP; normal pytest does not require distributed setup |
+| Collective adapters | Explicit fake shard-list and distributed rank-local adapter boundaries | They document semantics; they do not make the APIs interchangeable |
 | Accelerators | CUDA is optional for existing benchmarks | No NCCL, custom CUDA, FP8, or GPU requirement |
 | Performance claims | None | No Megatron-LM parity or speedup claims |
 
@@ -254,6 +255,22 @@ local PyTorch build and platform.
 This is not real distributed GPT tensor parallelism. v0.7 does not add NCCL,
 GPU requirements, multi-node orchestration, rank-local GPT parameters, or
 speedup claims.
+
+### Collective Adapter Boundaries
+
+`collective_adapters.py` makes the two collective layers explicit:
+
+- `FakeShardListCollectives` wraps the single-process fake TP collectives.
+  Methods receive a list of shard tensors because one Python process owns all
+  fake shards. This is the boundary used by the current educational fake TP
+  model path.
+- `DistributedRankLocalCollectives` wraps the optional CPU/Gloo distributed
+  collectives. Methods receive one local tensor per process/rank and delegate
+  to `torch.distributed` wrappers.
+
+These adapters are intentionally separate because fake shard-list collectives
+and rank-local distributed collectives do not have identical API contracts.
+Real distributed GPT tensor parallelism is still not implemented.
 
 ## v0.8 Direction
 
