@@ -74,6 +74,7 @@ python examples/inspect_fake_collectives.py
 python examples/inspect_distributed_collectives.py
 python examples/compare_distributed_parallel_linear.py --spawn 2
 python examples/compare_distributed_vocab_parallel.py --spawn 2
+python examples/compare_distributed_mlp.py --spawn 2
 ```
 
 ## v0.2 Fake Tensor Parallelism
@@ -318,17 +319,21 @@ multi-node orchestration, or speedup claims.
 ## v0.9 Direction
 
 Current v0.9 prototype work includes a module-level CPU/Gloo comparison for
-distributed vocab-parallel embeddings and LM heads:
+distributed vocab-parallel embeddings and LM heads, plus a module-level
+distributed MLP composition demo:
 
 ```bash
 python examples/compare_distributed_vocab_parallel.py --spawn 2
+python examples/compare_distributed_mlp.py --spawn 2
 ```
 
 This demonstrates rank-local vocab shards against dense `nn.Embedding` and
-`nn.Linear`. GPT/model real distributed tensor parallelism is not wired yet,
-distributed vocab partitions are strict divisible for now, and the fake vocab
-path still supports uneven vocab partitions. Distributed examples remain local
-CPU/Gloo spawn demos. There are no NCCL/GPU/multi-node or speedup claims.
+`nn.Linear`, and composes distributed column-parallel and row-parallel linear
+prototypes around a local GELU activation. GPT/model real distributed tensor
+parallelism is not wired yet, distributed vocab partitions are strict divisible
+for now, and the fake vocab path still supports uneven vocab partitions.
+Distributed examples remain local CPU/Gloo spawn demos. There are no
+NCCL/GPU/multi-node or speedup claims.
 
 - Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.
