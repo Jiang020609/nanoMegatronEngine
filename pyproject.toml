@@ -13,7 +13,7 @@ authors = [{ name = "nanoMegatronEngine contributors" }]
 dependencies = ["torch>=2.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "numpy>=1.26"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

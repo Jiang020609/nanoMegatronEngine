@@ -18,6 +18,7 @@ from nano_megatron_engine.parallel.distributed_collectives import (
     is_distributed_initialized,
 )
 from nano_megatron_engine.parallel.distributed_column_parallel_linear import DistributedColumnParallelLinear
+from nano_megatron_engine.parallel.distributed_qkv_parallel_linear import DistributedQKVParallelLinear
 from nano_megatron_engine.parallel.distributed_row_parallel_linear import DistributedRowParallelLinear
 from nano_megatron_engine.parallel.fake_tp import (
     fake_all_gather,
@@ -34,6 +35,7 @@ from nano_megatron_engine.parallel.vocab_parallel_lm_head import VocabParallelLM
 __all__ = [
     "ColumnParallelLinear",
     "DistributedColumnParallelLinear",
+    "DistributedQKVParallelLinear",
     "DistributedRankLocalCollectives",
     "DistributedRowParallelLinear",
     "FakeShardListCollectives",
