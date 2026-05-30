@@ -43,7 +43,7 @@ the training mechanics explicit.
 | Dense GPT training | CPU-runnable tiny GPT, trainer, microbatching, gradient accumulation, activation checkpointing | Educational scale only |
 | Fake tensor parallel layers | Single-process MLP, attention, embeddings, LM head, and fake collectives | Local tensors only |
 | Distributed collectives | Optional CPU/Gloo wrappers in `distributed_collectives.py` | Not wired into GPT TP; normal pytest does not require distributed setup |
-| Distributed parallel linear prototypes | CPU/Gloo column- and row-parallel linear modules | Module-level only; not wired into GPT/model code |
+| Distributed module prototypes | CPU/Gloo column/row linear modules, vocab modules, and MLP composition | Module-level only; not wired into GPT/model code |
 | Collective adapters | Explicit fake shard-list and distributed rank-local adapter boundaries | They document semantics; they do not make the APIs interchangeable |
 | Accelerators | CUDA is optional for existing benchmarks | No NCCL, custom CUDA, FP8, or GPU requirement |
 | Performance claims | None | No Megatron-LM parity or speedup claims |
@@ -316,24 +316,39 @@ The fake TP path and GPT/model code remain unchanged. These prototypes are not
 real distributed GPT tensor parallelism and do not add NCCL, GPU requirements,
 multi-node orchestration, or speedup claims.
 
-## v0.9 Direction
+## v0.9 Distributed Module-Level Prototypes
 
-Current v0.9 prototype work includes a module-level CPU/Gloo comparison for
-distributed vocab-parallel embeddings and LM heads, plus a module-level
-distributed MLP composition demo:
+v0.9 collects the CPU/Gloo distributed module-level prototype path:
+
+- `DistributedColumnParallelLinear` and `DistributedRowParallelLinear` provide
+  rank-local column- and row-parallel dense linear prototypes.
+- `VocabParallelEmbedding` and `VocabParallelLMHead` can use
+  `DistributedRankLocalCollectives` for rank-local vocab-parallel behavior.
+- `compare_distributed_mlp.py` composes
+  `DistributedColumnParallelLinear(gather_output=False) -> GELU(local shard) ->
+  DistributedRowParallelLinear(input_is_parallel=True)` and compares it with a
+  dense MLP core.
+- Forward outputs and input gradients are checked against dense modules in the
+  comparison examples and opt-in distributed tests.
+- Distributed tests are opt-in with `NME_RUN_DISTRIBUTED_TESTS=1`; default
+  `pytest` does not require a distributed environment.
+
+Run the module-level distributed comparisons with:
 
 ```bash
+python examples/compare_distributed_parallel_linear.py --spawn 2
 python examples/compare_distributed_vocab_parallel.py --spawn 2
 python examples/compare_distributed_mlp.py --spawn 2
+NME_RUN_DISTRIBUTED_TESTS=1 pytest tests/test_distributed_collectives.py tests/test_distributed_column_parallel_linear.py tests/test_distributed_row_parallel_linear.py tests/test_distributed_vocab_parallel.py tests/test_distributed_mlp_composition.py
 ```
 
-This demonstrates rank-local vocab shards against dense `nn.Embedding` and
-`nn.Linear`, and composes distributed column-parallel and row-parallel linear
-prototypes around a local GELU activation. GPT/model real distributed tensor
-parallelism is not wired yet, distributed vocab partitions are strict divisible
-for now, and the fake vocab path still supports uneven vocab partitions.
-Distributed examples remain local CPU/Gloo spawn demos. There are no
-NCCL/GPU/multi-node or speedup claims.
+These remain CPU/Gloo module-level prototypes. GPT/model real distributed
+tensor parallelism is not wired yet, distributed vocab partitions are strict
+divisible for now, and the fake vocab path still supports uneven vocab
+partitions. v0.9 does not add NCCL, GPU requirements, multi-node orchestration,
+or speedup claims.
+
+## v0.10 Direction
 
 - Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.
