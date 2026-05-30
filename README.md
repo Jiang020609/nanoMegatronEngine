@@ -75,6 +75,7 @@ python examples/inspect_distributed_collectives.py
 python examples/compare_distributed_parallel_linear.py --spawn 2
 python examples/compare_distributed_vocab_parallel.py --spawn 2
 python examples/compare_distributed_mlp.py --spawn 2
+python examples/compare_distributed_attention.py --spawn 2
 ```
 
 ## v0.2 Fake Tensor Parallelism
@@ -350,5 +351,11 @@ or speedup claims.
 
 ## v0.10 Direction
 
+- `compare_distributed_attention.py --spawn 2` demonstrates an isolated
+  CPU/Gloo distributed causal attention prototype. It uses
+  `DistributedQKVParallelLinear` for local Q/K/V head slicing and
+  `DistributedRowParallelLinear` for the output projection. GPT/model real
+  distributed tensor parallelism is not wired yet, and there are no NCCL, GPU,
+  multi-node orchestration, or speedup claims.
 - Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.
