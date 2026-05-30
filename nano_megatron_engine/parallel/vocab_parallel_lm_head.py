@@ -17,7 +17,19 @@ from nano_megatron_engine.parallel.fake_tp import partition_range
 
 
 class VocabParallelLMHead(nn.Module):
-    """Split LM-head output vocab rows across fake or rank-local distributed shards."""
+    """Split LM-head output vocab rows across vocab-parallel shards.
+
+    By default this module uses ``FakeShardListCollectives`` and keeps every
+    fake shard in one Python process. That educational path still supports
+    uneven vocab partitions.
+
+    Passing ``DistributedRankLocalCollectives`` switches to a module-level
+    CPU/Gloo prototype where each distributed rank owns one local vocab-output
+    shard. The distributed path currently requires strict divisibility:
+    ``vocab_size % world_size == 0``. It is not wired into the GPT/model path,
+    does not use NCCL/GPU/multi-node orchestration, and does not claim
+    speedups.
+    """
 
     def __init__(
         self,
@@ -37,14 +49,20 @@ class VocabParallelLMHead(nn.Module):
 
         self.collectives = collectives if collectives is not None else FakeShardListCollectives()
         self.is_rank_local = isinstance(self.collectives, DistributedRankLocalCollectives)
+        if not self.is_rank_local:
+            _validate_shard_list_collectives(self.collectives, "VocabParallelLMHead", ("all_gather",))
         self.rank = self.collectives.get_rank() if self.is_rank_local else 0
         self.world_size = self.collectives.get_world_size() if self.is_rank_local else tp_size
         if self.is_rank_local and tp_size != self.world_size:
-            raise ValueError(f"distributed vocab LM head tp_size={tp_size} must match world_size={self.world_size}")
+            raise ValueError(
+                "distributed vocab-parallel LM head with DistributedRankLocalCollectives "
+                f"requires tp_size={tp_size} to match world_size={self.world_size}"
+            )
         if self.is_rank_local and vocab_size % self.world_size != 0:
             raise ValueError(
-                "distributed vocab LM head currently requires divisible vocab partitions, "
-                f"got vocab_size={vocab_size}, world_size={self.world_size}"
+                "distributed vocab-parallel LM head with DistributedRankLocalCollectives "
+                "requires strict divisibility, got "
+                f"vocab_size={vocab_size}, world_size={self.world_size}"
             )
 
         self.hidden_size = hidden_size
@@ -52,6 +70,9 @@ class VocabParallelLMHead(nn.Module):
         self.tp_size = self.world_size if self.is_rank_local else tp_size
         self.vocab_ranges = [partition_range(vocab_size, self.tp_size, idx) for idx in range(self.tp_size)]
         self.local_vocab_start, self.local_vocab_end = self.vocab_ranges[self.rank]
+        self.vocab_start = self.local_vocab_start
+        self.vocab_end = self.local_vocab_end
+        self.local_vocab_size = self.local_vocab_end - self.local_vocab_start
         parameter_ranges = [self.vocab_ranges[self.rank]] if self.is_rank_local else self.vocab_ranges
         self.weight_shards = nn.ParameterList(
             [nn.Parameter(torch.empty(end - start, hidden_size)) for start, end in parameter_ranges]
@@ -78,6 +99,9 @@ class VocabParallelLMHead(nn.Module):
         tp_size: int = 2,
         collectives: ShardListCollectiveProtocol | DistributedRankLocalCollectives | None = None,
     ) -> "VocabParallelLMHead":
+        if not isinstance(linear, nn.Linear):
+            raise TypeError(f"linear must be an nn.Linear, got {type(linear).__name__}")
+
         layer = cls(
             hidden_size=linear.in_features,
             vocab_size=linear.out_features,
@@ -166,7 +190,9 @@ class VocabParallelLMHead(nn.Module):
         mode = "distributed_rank_local" if self.is_rank_local else "fake_shard_list"
         return (
             f"hidden_size={self.hidden_size}, vocab_size={self.vocab_size}, "
-            f"tp_size={self.tp_size}, bias={self.bias_shards is not None}, mode={mode}"
+            f"tp_size={self.tp_size}, bias={self.bias_shards is not None}, mode={mode}, "
+            f"local_vocab_range=[{self.local_vocab_start}, {self.local_vocab_end}), "
+            f"local_vocab_size={self.local_vocab_size}"
         )
 
     def _iter_bias_shards(self) -> tuple[torch.Tensor | None, ...]:
@@ -176,6 +202,8 @@ class VocabParallelLMHead(nn.Module):
 
 
 class _DistributedVocabParallelLMHeadFunction(torch.autograd.Function):
+    """Gather vocab logits in forward and reduce input gradients in backward."""
+
     @staticmethod
     def forward(
         ctx,
@@ -195,6 +223,9 @@ class _DistributedVocabParallelLMHeadFunction(torch.autograd.Function):
         ctx.local_vocab_end = local_vocab_end
         ctx.group = group
 
+        # Forward gathers local vocab logits; backward below sums rank-local
+        # input-gradient contributions to match dense Linear semantics. This is
+        # module-level CPU/Gloo prototype behavior, not GPT wiring.
         return distributed_all_gather(local_logits, dim=-1, group=group)
 
     @staticmethod
@@ -218,3 +249,12 @@ def _sum_bias_gradient(grad_output: torch.Tensor) -> torch.Tensor:
     if grad_output.ndim == 1:
         return grad_output
     return grad_output.sum(dim=tuple(range(grad_output.ndim - 1)))
+
+
+def _validate_shard_list_collectives(collectives: object, module_name: str, required_methods: tuple[str, ...]) -> None:
+    missing = [name for name in required_methods if not callable(getattr(collectives, name, None))]
+    if missing:
+        raise TypeError(
+            f"{module_name} collectives must be DistributedRankLocalCollectives or a shard-list "
+            f"collective adapter with methods: {', '.join(required_methods)}"
+        )

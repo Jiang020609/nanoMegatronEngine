@@ -326,8 +326,9 @@ python examples/compare_distributed_vocab_parallel.py --spawn 2
 
 This demonstrates rank-local vocab shards against dense `nn.Embedding` and
 `nn.Linear`. GPT/model real distributed tensor parallelism is not wired yet,
-distributed vocab partitions are strict divisible for now, and there are no
-NCCL/GPU/multi-node or speedup claims.
+distributed vocab partitions are strict divisible for now, and the fake vocab
+path still supports uneven vocab partitions. Distributed examples remain local
+CPU/Gloo spawn demos. There are no NCCL/GPU/multi-node or speedup claims.
 
 - Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.

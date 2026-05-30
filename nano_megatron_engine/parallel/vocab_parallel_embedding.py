@@ -15,7 +15,19 @@ from nano_megatron_engine.parallel.fake_tp import partition_range
 
 
 class VocabParallelEmbedding(nn.Module):
-    """Split embedding rows across fake or rank-local distributed vocab shards."""
+    """Split token embedding rows across vocab-parallel shards.
+
+    By default this module uses ``FakeShardListCollectives`` and keeps every
+    fake shard in one Python process. That educational path still supports
+    uneven vocab partitions.
+
+    Passing ``DistributedRankLocalCollectives`` switches to a module-level
+    CPU/Gloo prototype where each distributed rank owns one local vocab shard.
+    The distributed path currently requires strict divisibility:
+    ``num_embeddings % world_size == 0``. It is not wired into the GPT/model
+    path, does not use NCCL/GPU/multi-node orchestration, and does not claim
+    speedups.
+    """
 
     def __init__(
         self,
@@ -34,16 +46,20 @@ class VocabParallelEmbedding(nn.Module):
 
         self.collectives = collectives if collectives is not None else FakeShardListCollectives()
         self.is_rank_local = isinstance(self.collectives, DistributedRankLocalCollectives)
+        if not self.is_rank_local:
+            _validate_shard_list_collectives(self.collectives, "VocabParallelEmbedding", ("all_reduce_sum",))
         self.rank = self.collectives.get_rank() if self.is_rank_local else 0
         self.world_size = self.collectives.get_world_size() if self.is_rank_local else tp_size
         if self.is_rank_local and tp_size != self.world_size:
             raise ValueError(
-                f"distributed vocab embedding tp_size={tp_size} must match world_size={self.world_size}"
+                "distributed vocab-parallel embedding with DistributedRankLocalCollectives "
+                f"requires tp_size={tp_size} to match world_size={self.world_size}"
             )
         if self.is_rank_local and num_embeddings % self.world_size != 0:
             raise ValueError(
-                "distributed vocab embedding currently requires divisible vocab partitions, "
-                f"got num_embeddings={num_embeddings}, world_size={self.world_size}"
+                "distributed vocab-parallel embedding with DistributedRankLocalCollectives "
+                "requires strict divisibility, got "
+                f"vocab_size={num_embeddings}, world_size={self.world_size}"
             )
 
         self.num_embeddings = num_embeddings
@@ -51,6 +67,9 @@ class VocabParallelEmbedding(nn.Module):
         self.tp_size = self.world_size if self.is_rank_local else tp_size
         self.vocab_ranges = [partition_range(num_embeddings, self.tp_size, idx) for idx in range(self.tp_size)]
         self.local_vocab_start, self.local_vocab_end = self.vocab_ranges[self.rank]
+        self.vocab_start = self.local_vocab_start
+        self.vocab_end = self.local_vocab_end
+        self.local_vocab_size = self.local_vocab_end - self.local_vocab_start
         parameter_ranges = [self.vocab_ranges[self.rank]] if self.is_rank_local else self.vocab_ranges
         self.weight_shards = nn.ParameterList(
             [nn.Parameter(torch.empty(end - start, embedding_dim)) for start, end in parameter_ranges]
@@ -68,6 +87,9 @@ class VocabParallelEmbedding(nn.Module):
         tp_size: int = 2,
         collectives: ShardListCollectiveProtocol | DistributedRankLocalCollectives | None = None,
     ) -> "VocabParallelEmbedding":
+        if not isinstance(embedding, nn.Embedding):
+            raise TypeError(f"embedding must be an nn.Embedding, got {type(embedding).__name__}")
+
         layer = cls(
             embedding.num_embeddings,
             embedding.embedding_dim,
@@ -146,6 +168,17 @@ class VocabParallelEmbedding(nn.Module):
     def extra_repr(self) -> str:
         mode = "distributed_rank_local" if self.is_rank_local else "fake_shard_list"
         return (
-            f"num_embeddings={self.num_embeddings}, embedding_dim={self.embedding_dim}, "
-            f"tp_size={self.tp_size}, mode={mode}"
+            f"vocab_size={self.num_embeddings}, embedding_dim={self.embedding_dim}, "
+            f"tp_size={self.tp_size}, mode={mode}, "
+            f"local_vocab_range=[{self.local_vocab_start}, {self.local_vocab_end}), "
+            f"local_vocab_size={self.local_vocab_size}"
+        )
+
+
+def _validate_shard_list_collectives(collectives: object, module_name: str, required_methods: tuple[str, ...]) -> None:
+    missing = [name for name in required_methods if not callable(getattr(collectives, name, None))]
+    if missing:
+        raise TypeError(
+            f"{module_name} collectives must be DistributedRankLocalCollectives or a shard-list "
+            f"collective adapter with methods: {', '.join(required_methods)}"
         )

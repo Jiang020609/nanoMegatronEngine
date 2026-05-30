@@ -26,6 +26,22 @@ def test_distributed_vocab_modules_require_initialized_distributed():
         VocabParallelLMHead(8, 64, tp_size=2, collectives=collectives)
 
 
+def test_vocab_parallel_modules_validate_collective_adapter_shape():
+    bad_collectives = object()
+
+    with pytest.raises(TypeError, match="DistributedRankLocalCollectives.*all_reduce_sum"):
+        VocabParallelEmbedding(64, 8, tp_size=2, collectives=bad_collectives)
+    with pytest.raises(TypeError, match="DistributedRankLocalCollectives.*all_gather"):
+        VocabParallelLMHead(8, 64, tp_size=2, collectives=bad_collectives)
+
+
+def test_vocab_parallel_dense_factory_helpers_validate_module_type():
+    with pytest.raises(TypeError, match="nn.Embedding"):
+        VocabParallelEmbedding.from_embedding(nn.Linear(8, 64))
+    with pytest.raises(TypeError, match="nn.Linear"):
+        VocabParallelLMHead.from_linear(nn.Embedding(64, 8))
+
+
 @pytest.mark.skipif(
     os.environ.get("NME_RUN_DISTRIBUTED_TESTS") != "1",
     reason="distributed vocab module tests are opt-in; set NME_RUN_DISTRIBUTED_TESTS=1",
@@ -52,6 +68,7 @@ def _distributed_vocab_worker(rank: int, world_size: int, port: int) -> None:
 
     try:
         init_distributed_from_env("gloo")
+        _assert_extra_repr_and_local_vocab_ranges(world_size)
         _assert_embedding_output_matches_dense(world_size)
         _assert_embedding_gradients_match_dense_slice(world_size)
         _assert_lm_head_output_matches_dense(world_size)
@@ -61,6 +78,44 @@ def _distributed_vocab_worker(rank: int, world_size: int, port: int) -> None:
     finally:
         if dist.is_available() and dist.is_initialized():
             dist.destroy_process_group()
+
+
+def _assert_extra_repr_and_local_vocab_ranges(world_size: int) -> None:
+    collectives = DistributedRankLocalCollectives()
+    rank = collectives.get_rank()
+    local_size = 64 // world_size
+    expected_start = rank * local_size
+    expected_end = expected_start + local_size
+
+    embedding = VocabParallelEmbedding(
+        64,
+        8,
+        tp_size=world_size,
+        collectives=DistributedRankLocalCollectives(),
+    )
+    lm_head = VocabParallelLMHead(
+        8,
+        64,
+        tp_size=world_size,
+        bias=True,
+        collectives=DistributedRankLocalCollectives(),
+    )
+
+    for module in (embedding, lm_head):
+        assert module.vocab_start == expected_start
+        assert module.vocab_end == expected_end
+        assert module.local_vocab_size == local_size
+        assert module.local_vocab_start == expected_start
+        assert module.local_vocab_end == expected_end
+        text = module.extra_repr()
+        assert "mode=distributed_rank_local" in text
+        assert f"local_vocab_range=[{expected_start}, {expected_end})" in text
+        assert f"local_vocab_size={local_size}" in text
+
+    assert "vocab_size=64" in embedding.extra_repr()
+    assert "embedding_dim=8" in embedding.extra_repr()
+    assert "hidden_size=8" in lm_head.extra_repr()
+    assert "bias=True" in lm_head.extra_repr()
 
 
 def _assert_embedding_output_matches_dense(world_size: int) -> None:
@@ -172,9 +227,9 @@ def _assert_merge_helpers_gather_rank_local_weights(world_size: int) -> None:
 
 def _assert_uneven_distributed_vocab_partitions_raise(world_size: int) -> None:
     collectives = DistributedRankLocalCollectives()
-    with pytest.raises(ValueError, match="requires divisible vocab partitions"):
+    with pytest.raises(ValueError, match="distributed vocab-parallel.*strict divisibility.*vocab_size=65.*world_size=2"):
         VocabParallelEmbedding(65, 8, tp_size=world_size, collectives=collectives)
-    with pytest.raises(ValueError, match="requires divisible vocab partitions"):
+    with pytest.raises(ValueError, match="distributed vocab-parallel.*strict divisibility.*vocab_size=65.*world_size=2"):
         VocabParallelLMHead(8, 65, tp_size=world_size, collectives=collectives)
 
 
