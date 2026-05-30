@@ -8,13 +8,24 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from nano_megatron_engine.parallel.fake_tp import concat_tensor_parallel_outputs, partition_range
+from nano_megatron_engine.parallel.collective_adapters import (
+    FakeShardListCollectives,
+    ShardListCollectiveProtocol,
+)
+from nano_megatron_engine.parallel.fake_tp import partition_range
 
 
 class VocabParallelLMHead(nn.Module):
     """Split LM-head output vocab rows across fake TP shards."""
 
-    def __init__(self, hidden_size: int, vocab_size: int, tp_size: int = 2, bias: bool = False) -> None:
+    def __init__(
+        self,
+        hidden_size: int,
+        vocab_size: int,
+        tp_size: int = 2,
+        bias: bool = False,
+        collectives: ShardListCollectiveProtocol | None = None,
+    ) -> None:
         super().__init__()
         if hidden_size <= 0:
             raise ValueError(f"hidden_size must be positive, got {hidden_size}")
@@ -26,6 +37,7 @@ class VocabParallelLMHead(nn.Module):
         self.hidden_size = hidden_size
         self.vocab_size = vocab_size
         self.tp_size = tp_size
+        self.collectives = collectives if collectives is not None else FakeShardListCollectives()
         self.vocab_ranges = [partition_range(vocab_size, tp_size, idx) for idx in range(tp_size)]
         self.weight_shards = nn.ParameterList(
             [nn.Parameter(torch.empty(end - start, hidden_size)) for start, end in self.vocab_ranges]
@@ -46,12 +58,18 @@ class VocabParallelLMHead(nn.Module):
                 nn.init.uniform_(bias, -bound, bound)
 
     @classmethod
-    def from_linear(cls, linear: nn.Linear, tp_size: int = 2) -> "VocabParallelLMHead":
+    def from_linear(
+        cls,
+        linear: nn.Linear,
+        tp_size: int = 2,
+        collectives: ShardListCollectiveProtocol | None = None,
+    ) -> "VocabParallelLMHead":
         layer = cls(
             hidden_size=linear.in_features,
             vocab_size=linear.out_features,
             tp_size=tp_size,
             bias=linear.bias is not None,
+            collectives=collectives,
         )
         layer.to(device=linear.weight.device, dtype=linear.weight.dtype)
         with torch.no_grad():
@@ -74,7 +92,7 @@ class VocabParallelLMHead(nn.Module):
         self.weight_shards = weight_shards
 
     def merge_to_linear(self) -> nn.Linear:
-        weight = concat_tensor_parallel_outputs(list(self.weight_shards), dim=0)
+        weight = self.collectives.all_gather(list(self.weight_shards), dim=0)
         linear = nn.Linear(
             self.hidden_size,
             self.vocab_size,
@@ -85,7 +103,7 @@ class VocabParallelLMHead(nn.Module):
         with torch.no_grad():
             linear.weight.copy_(weight)
             if self.bias_shards is not None and linear.bias is not None:
-                linear.bias.copy_(concat_tensor_parallel_outputs(list(self.bias_shards), dim=0))
+                linear.bias.copy_(self.collectives.all_gather(list(self.bias_shards), dim=0))
         return linear
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -93,7 +111,7 @@ class VocabParallelLMHead(nn.Module):
             F.linear(x, weight, bias)
             for weight, bias in zip(self.weight_shards, self._iter_bias_shards())
         )
-        return concat_tensor_parallel_outputs(local_logits, dim=-1)
+        return self.collectives.all_gather(local_logits, dim=-1)
 
     def extra_repr(self) -> str:
         return (

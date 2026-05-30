@@ -36,6 +36,17 @@ Those features are intentionally outside v0.1. This repository focuses on the
 small dense-GPT path: one model, one device, readable code, and tests that make
 the training mechanics explicit.
 
+## Capability Table
+
+| Area | Current support | Limitations |
+| --- | --- | --- |
+| Dense GPT training | CPU-runnable tiny GPT, trainer, microbatching, gradient accumulation, activation checkpointing | Educational scale only |
+| Fake tensor parallel layers | Single-process MLP, attention, embeddings, LM head, and fake collectives | Local tensors only |
+| Distributed collectives | Optional CPU/Gloo wrappers in `distributed_collectives.py` | Not wired into GPT TP; normal pytest does not require distributed setup |
+| Collective adapters | Explicit fake shard-list and distributed rank-local adapter boundaries | They document semantics; they do not make the APIs interchangeable |
+| Accelerators | CUDA is optional for existing benchmarks | No NCCL, custom CUDA, FP8, or GPU requirement |
+| Performance claims | None | No Megatron-LM parity or speedup claims |
+
 ## Install
 
 ```bash
@@ -58,6 +69,8 @@ python examples/bench_parallel_linear.py
 python examples/compare_tp_mlp.py
 python examples/compare_tp_attention.py
 python examples/compare_tp_embeddings_lm_head.py
+python examples/inspect_fake_collectives.py
+python examples/inspect_distributed_collectives.py
 ```
 
 ## v0.2 Fake Tensor Parallelism
@@ -171,7 +184,108 @@ python examples/compare_tp_embeddings_lm_head.py
 pytest
 ```
 
-## v0.6 Direction
+## v0.6 Fake Collective APIs
+
+v0.6 introduces explicit fake tensor-parallel collective APIs in `fake_tp.py`:
+
+- `fake_all_gather` simulates gathering ordered shard outputs by concatenating
+  tensors along a chosen dimension. It supports uneven sizes along the gather
+  dimension.
+- `fake_all_reduce_sum` simulates summing partial outputs across fake shards.
+- `fake_reduce_scatter_sum` simulates a sum followed by returning one
+  contiguous output partition.
+- `partition_range` remains the helper for contiguous, uneven partitioning.
+
+The fake TP layers call these APIs where it clarifies the Megatron-style
+communication pattern:
+
+- `ColumnParallelLinear` uses `FakeShardListCollectives.all_gather` when
+  `gather_output=True`.
+- `RowParallelLinear` uses `FakeShardListCollectives.all_reduce_sum`.
+- `VocabParallelEmbedding` uses `FakeShardListCollectives.all_reduce_sum`.
+- `VocabParallelLMHead` uses `FakeShardListCollectives.all_gather`.
+
+This is still single-process fake TP. It does not use `torch.distributed`,
+NCCL, process groups, rank-local process state, or real multi-GPU
+communication, and it does not claim speedups.
+
+Inspect the fake collectives with:
+
+```bash
+python examples/inspect_fake_collectives.py
+pytest
+```
+
+## v0.7 Optional CPU/Gloo Distributed Collectives
+
+v0.7 adds optional `torch.distributed` collective wrappers in
+`distributed_collectives.py`:
+
+- `init_distributed_from_env` initializes a CPU/Gloo process group from
+  torchrun-style environment variables.
+- `distributed_all_gather` gathers rank-local tensors, including uneven sizes
+  along the gather dimension.
+- `distributed_all_reduce_sum` sums same-shaped tensors across ranks.
+- `distributed_reduce_scatter_sum` uses a simple all-reduce-plus-slice fallback.
+- `get_rank` and `get_world_size` provide small checked accessors.
+
+The fake collectives remain unchanged and the GPT fake TP layers still use the
+single-process fake APIs. The distributed wrappers are optional low-level APIs
+for learning and smoke-testing collective semantics; they are not wired into
+the GPT model path. CPU/Gloo is the only distributed backend demonstrated right
+now. Normal training examples and default `pytest` runs do not require a
+distributed environment. The distributed smoke test is opt-in:
+
+```bash
+NME_RUN_DISTRIBUTED_TESTS=1 pytest tests/test_distributed_collectives.py
+```
+
+Inspect the CPU/Gloo wrappers with:
+
+```bash
+python examples/inspect_distributed_collectives.py
+python examples/inspect_distributed_collectives.py --spawn 2
+torchrun --standalone --nproc_per_node=2 examples/inspect_distributed_collectives.py
+```
+
+The `--spawn 2` form is a convenient local smoke test when torchrun
+rendezvous behavior differs across PyTorch builds, and it is the recommended
+local demo for the wrapper APIs. Direct torchrun behavior can depend on the
+local PyTorch build and platform.
+
+This is not real distributed GPT tensor parallelism. v0.7 does not add NCCL,
+GPU requirements, multi-node orchestration, rank-local GPT parameters, or
+speedup claims.
+
+### Collective Adapter Boundaries
+
+`collective_adapters.py` makes the two collective layers explicit:
+
+- `FakeShardListCollectives` wraps the single-process fake TP collectives.
+  Methods receive a list of shard tensors because one Python process owns all
+  fake shards. This is the boundary used by the current educational fake TP
+  model path.
+- `DistributedRankLocalCollectives` wraps the optional CPU/Gloo distributed
+  collectives. Methods receive one local tensor per process/rank and delegate
+  to `torch.distributed` wrappers.
+
+These adapters are intentionally separate because fake shard-list collectives
+and rank-local distributed collectives do not have identical API contracts.
+Real distributed GPT tensor parallelism is still not implemented.
+
+`ColumnParallelLinear` and `RowParallelLinear` accept an optional shard-list
+collective adapter for tests and education. By default they use
+`FakeShardListCollectives`, so existing GPT/MLP/attention behavior and numerics
+remain unchanged. The rank-local distributed adapter is intentionally not used
+by these fake single-process layers.
+
+`VocabParallelEmbedding` and `VocabParallelLMHead` use the same shard-list
+collective boundary. The embedding sums per-shard masked embedding outputs with
+`all_reduce_sum`, while the LM head gathers per-shard vocab logits with
+`all_gather`. This still does not implement real distributed GPT tensor
+parallelism; rank-local distributed collectives remain separate low-level APIs.
+
+## v0.8 Direction
 
 - Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.

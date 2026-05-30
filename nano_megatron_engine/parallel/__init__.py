@@ -1,11 +1,30 @@
-"""Single-process fake tensor-parallel layers."""
+"""Educational tensor-parallel layers and collective helpers."""
 
 from nano_megatron_engine.parallel.column_parallel_linear import ColumnParallelLinear
+from nano_megatron_engine.parallel.collective_adapters import (
+    DistributedRankLocalCollectives,
+    FakeShardListCollectives,
+    RankLocalCollectiveProtocol,
+    ShardListCollectiveProtocol,
+)
+from nano_megatron_engine.parallel.distributed_collectives import (
+    distributed_all_gather,
+    distributed_all_reduce_sum,
+    distributed_reduce_scatter_sum,
+    get_rank,
+    get_world_size,
+    init_distributed_from_env,
+    is_distributed_available,
+    is_distributed_initialized,
+)
+from nano_megatron_engine.parallel.distributed_column_parallel_linear import DistributedColumnParallelLinear
+from nano_megatron_engine.parallel.distributed_row_parallel_linear import DistributedRowParallelLinear
 from nano_megatron_engine.parallel.fake_tp import (
-    concat_tensor_parallel_outputs,
+    fake_all_gather,
+    fake_all_reduce_sum,
+    fake_reduce_scatter_sum,
     partition_range,
     split_tensor_along_dim,
-    sum_tensor_parallel_outputs,
     validate_divisible,
 )
 from nano_megatron_engine.parallel.row_parallel_linear import RowParallelLinear
@@ -14,12 +33,27 @@ from nano_megatron_engine.parallel.vocab_parallel_lm_head import VocabParallelLM
 
 __all__ = [
     "ColumnParallelLinear",
+    "DistributedColumnParallelLinear",
+    "DistributedRankLocalCollectives",
+    "DistributedRowParallelLinear",
+    "FakeShardListCollectives",
+    "RankLocalCollectiveProtocol",
     "RowParallelLinear",
+    "ShardListCollectiveProtocol",
     "VocabParallelEmbedding",
     "VocabParallelLMHead",
-    "concat_tensor_parallel_outputs",
+    "distributed_all_gather",
+    "distributed_all_reduce_sum",
+    "distributed_reduce_scatter_sum",
+    "fake_all_gather",
+    "fake_all_reduce_sum",
+    "fake_reduce_scatter_sum",
+    "get_rank",
+    "get_world_size",
+    "init_distributed_from_env",
+    "is_distributed_available",
+    "is_distributed_initialized",
     "partition_range",
     "split_tensor_along_dim",
-    "sum_tensor_parallel_outputs",
     "validate_divisible",
 ]

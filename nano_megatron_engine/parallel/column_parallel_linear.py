@@ -8,8 +8,11 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from nano_megatron_engine.parallel.collective_adapters import (
+    FakeShardListCollectives,
+    ShardListCollectiveProtocol,
+)
 from nano_megatron_engine.parallel.fake_tp import (
-    concat_tensor_parallel_outputs,
     split_tensor_along_dim,
     validate_divisible,
 )
@@ -30,6 +33,7 @@ class ColumnParallelLinear(nn.Module):
         tp_size: int = 2,
         bias: bool = True,
         gather_output: bool = True,
+        collectives: ShardListCollectiveProtocol | None = None,
     ) -> None:
         super().__init__()
         validate_divisible(out_features, tp_size, "out_features")
@@ -40,6 +44,7 @@ class ColumnParallelLinear(nn.Module):
         self.out_features = out_features
         self.tp_size = tp_size
         self.gather_output = gather_output
+        self.collectives = collectives if collectives is not None else FakeShardListCollectives()
         self.local_out_features = out_features // tp_size
 
         self.weight_shards = nn.ParameterList(
@@ -66,6 +71,7 @@ class ColumnParallelLinear(nn.Module):
         linear: nn.Linear,
         tp_size: int = 2,
         gather_output: bool = True,
+        collectives: ShardListCollectiveProtocol | None = None,
     ) -> "ColumnParallelLinear":
         """Create a column-parallel layer with weights copied from nn.Linear."""
 
@@ -75,6 +81,7 @@ class ColumnParallelLinear(nn.Module):
             tp_size=tp_size,
             bias=linear.bias is not None,
             gather_output=gather_output,
+            collectives=collectives,
         )
         layer.to(device=linear.weight.device, dtype=linear.weight.dtype)
 
@@ -101,9 +108,9 @@ class ColumnParallelLinear(nn.Module):
         )
 
         with torch.no_grad():
-            linear.weight.copy_(concat_tensor_parallel_outputs(list(self.weight_shards), dim=0))
+            linear.weight.copy_(self.collectives.all_gather(list(self.weight_shards), dim=0))
             if self.bias_shards is not None and linear.bias is not None:
-                linear.bias.copy_(concat_tensor_parallel_outputs(list(self.bias_shards), dim=0))
+                linear.bias.copy_(self.collectives.all_gather(list(self.bias_shards), dim=0))
         return linear
 
     def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, ...]:
@@ -115,7 +122,7 @@ class ColumnParallelLinear(nn.Module):
             for weight, bias in zip(self.weight_shards, self._iter_bias_shards())
         )
         if self.gather_output:
-            return concat_tensor_parallel_outputs(local_outputs, dim=-1)
+            return self.collectives.all_gather(local_outputs, dim=-1)
         return local_outputs
 
     def extra_repr(self) -> str:
@@ -129,4 +136,3 @@ class ColumnParallelLinear(nn.Module):
         if self.bias_shards is None:
             return tuple(None for _ in range(self.tp_size))
         return tuple(self.bias_shards)
-
