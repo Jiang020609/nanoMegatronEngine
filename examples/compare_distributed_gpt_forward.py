@@ -60,6 +60,10 @@ def _run_demo() -> None:
             print(f"n_head: {result['n_head']}")
             print(f"n_embd: {result['n_embd']}")
             print()
+            print("Local shard summaries")
+            for summary in result["shard_summaries"]:
+                print(_format_shard_summary(summary))
+            print()
             print("Forward")
             print(f"  dense logits shape: {result['dense_shape']}")
             print(f"  distributed logits shape: {result['distributed_shape']}")
@@ -99,6 +103,7 @@ def _compare_gpt_forward(world_size: int) -> dict[str, object]:
     distributed = DistributedGPTModel(distributed_config)
     distributed.eval()
     distributed.copy_from_dense_(dense)
+    shard_summaries = _gather_shard_summaries(distributed.local_shard_summary())
 
     input_ids = torch.tensor(
         [
@@ -136,6 +141,7 @@ def _compare_gpt_forward(world_size: int) -> dict[str, object]:
         "n_layer": dense_config.n_layer,
         "n_head": dense_config.n_head,
         "n_embd": dense_config.n_embd,
+        "shard_summaries": shard_summaries,
         "dense_shape": dense_logits.shape,
         "distributed_shape": distributed_logits.shape,
         "logits_error": _max_abs_error(dense_logits, distributed_logits),
@@ -211,6 +217,30 @@ def _all_trainable_grads_are_finite(model: torch.nn.Module) -> bool:
     if not grads:
         return False
     return all(grad is not None and torch.isfinite(grad).all() for grad in grads)
+
+
+def _gather_shard_summaries(summary: dict[str, object]) -> list[dict[str, object]]:
+    import torch.distributed as dist
+
+    summaries: list[dict[str, object] | None] = [None for _ in range(dist.get_world_size())]
+    dist.all_gather_object(summaries, summary)
+    return [item for item in summaries if item is not None]
+
+
+def _format_shard_summary(summary: dict[str, object]) -> str:
+    token_embedding = summary["token_embedding"]
+    lm_head = summary["lm_head"]
+    blocks = summary["blocks"]
+    first_block = blocks[0]
+    attention = first_block["attention"]
+    mlp = first_block["mlp"]
+    return (
+        f"  rank {summary['rank']}: params={summary['local_parameter_count']} "
+        f"token_vocab={token_embedding['vocab_range']} token_weight={token_embedding['weight_shape']} "
+        f"lm_head_weight={lm_head['weight_shape']} tied={lm_head['tied_to_token_embedding']} "
+        f"blocks={len(blocks)} block0_qkv={attention['qkv_weight_shape']} "
+        f"block0_fc1={mlp['fc1_weight_shape']} block0_fc2={mlp['fc2_weight_shape']}"
+    )
 
 
 def _run_optimizer_step_smoke(

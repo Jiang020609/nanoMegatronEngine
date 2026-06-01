@@ -154,9 +154,53 @@ class DistributedGPTModel(nn.Module):
 
         return sum(parameter.numel() for parameter in self.parameters() if parameter.requires_grad)
 
+    def local_shard_summary(self) -> dict[str, object]:
+        """Return serializable metadata for this rank's local GPT shards."""
+
+        return {
+            "rank": self.rank,
+            "world_size": self.world_size,
+            "local_parameter_count": self.num_parameters(),
+            "token_embedding": {
+                "vocab_range": (self.token_embedding.local_vocab_start, self.token_embedding.local_vocab_end),
+                "weight_shape": tuple(self.token_embedding.weight_shards[0].shape),
+            },
+            "position_embedding": {
+                "replicated": True,
+                "weight_shape": tuple(self.position_embedding.weight.shape),
+            },
+            "blocks": [self._block_shard_summary(index, block) for index, block in enumerate(self.blocks)],
+            "final_layernorm": {
+                "replicated": True,
+                "weight_shape": tuple(self.ln_f.weight.shape),
+            },
+            "lm_head": {
+                "vocab_range": (self.lm_head.local_vocab_start, self.lm_head.local_vocab_end),
+                "weight_shape": tuple(self.lm_head.weight_shards[0].shape),
+                "tied_to_token_embedding": self.lm_head.weight_shards[0] is self.token_embedding.weight_shards[0],
+            },
+        }
+
     def extra_repr(self) -> str:
         return (
             f"vocab_size={self.config.vocab_size}, block_size={self.config.block_size}, "
             f"n_layer={self.config.n_layer}, n_head={self.config.n_head}, n_embd={self.config.n_embd}, "
             f"rank={self.rank}, world_size={self.world_size}"
         )
+
+    @staticmethod
+    def _block_shard_summary(index: int, block: DistributedTransformerBlock) -> dict[str, object]:
+        return {
+            "index": index,
+            "layernorms_replicated": True,
+            "attention": {
+                "local_heads": block.attn.local_heads,
+                "head_dim": block.attn.head_dim,
+                "qkv_weight_shape": tuple(block.attn.qkv.weight.shape),
+                "proj_weight_shape": tuple(block.attn.proj.weight.shape),
+            },
+            "mlp": {
+                "fc1_weight_shape": tuple(block.fc1.weight.shape),
+                "fc2_weight_shape": tuple(block.fc2.weight.shape),
+            },
+        }

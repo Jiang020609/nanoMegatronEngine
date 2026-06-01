@@ -46,6 +46,7 @@ def _distributed_gpt_worker(rank: int, world_size: int, port: int) -> None:
     try:
         init_distributed_from_env("gloo")
         _assert_dense_gpt_logits_and_loss_match_distributed(world_size)
+        _assert_distributed_gpt_local_shard_summary(world_size)
         _assert_distributed_gpt_loss_backward_smoke(world_size)
         _assert_distributed_gpt_optimizer_step_smoke(world_size)
         _assert_tensor_parallel_size_mismatch_raises()
@@ -87,6 +88,50 @@ def _assert_dense_gpt_logits_and_loss_match_distributed(world_size: int) -> None
     assert distributed_loss is not None
     torch.testing.assert_close(distributed_logits, dense_logits, atol=1e-6, rtol=1e-5)
     torch.testing.assert_close(distributed_loss, dense_loss, atol=1e-6, rtol=1e-5)
+
+
+def _assert_distributed_gpt_local_shard_summary(world_size: int) -> None:
+    distributed = DistributedGPTModel(_distributed_config(world_size=world_size))
+    summary = distributed.local_shard_summary()
+    rank = distributed.collectives.get_rank()
+    local_vocab_size = distributed.config.vocab_size // world_size
+    start = rank * local_vocab_size
+    end = start + local_vocab_size
+
+    assert summary["rank"] == rank
+    assert summary["world_size"] == world_size
+    assert summary["local_parameter_count"] == distributed.num_parameters()
+    assert summary["token_embedding"] == {
+        "vocab_range": (start, end),
+        "weight_shape": (local_vocab_size, distributed.config.n_embd),
+    }
+    assert summary["position_embedding"] == {
+        "replicated": True,
+        "weight_shape": (distributed.config.block_size, distributed.config.n_embd),
+    }
+    assert summary["final_layernorm"] == {
+        "replicated": True,
+        "weight_shape": (distributed.config.n_embd,),
+    }
+    assert summary["lm_head"] == {
+        "vocab_range": (start, end),
+        "weight_shape": (local_vocab_size, distributed.config.n_embd),
+        "tied_to_token_embedding": True,
+    }
+    blocks = summary["blocks"]
+    assert isinstance(blocks, list)
+    assert len(blocks) == distributed.config.n_layer
+    first_block = blocks[0]
+    assert first_block["attention"]["local_heads"] == distributed.config.n_head // world_size
+    assert first_block["attention"]["qkv_weight_shape"] == (3 * distributed.config.n_embd // world_size, distributed.config.n_embd)
+    assert first_block["mlp"]["fc1_weight_shape"] == (
+        distributed.config.mlp_hidden_size // world_size,
+        distributed.config.n_embd,
+    )
+    assert first_block["mlp"]["fc2_weight_shape"] == (
+        distributed.config.n_embd,
+        distributed.config.mlp_hidden_size // world_size,
+    )
 
 
 def _assert_distributed_gpt_loss_backward_smoke(world_size: int) -> None:
