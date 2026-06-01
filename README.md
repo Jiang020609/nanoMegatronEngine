@@ -395,10 +395,11 @@ or speedup claims.
   multi-node orchestration or speedup claims.
 - `torchrun --standalone --nproc_per_node=4
   examples/compare_distributed_gpt_gradients_nccl.py --preset small` runs a
-  stricter CUDA/NCCL gradient-slice comparison. It compares dense GPT
-  gradients with the corresponding local distributed GPT parameter shards,
-  including QKV head slices, row/column-parallel linear slices, tied vocab
-  shards, and replicated parameters after explicit replicated-gradient
-  synchronization. This is diagnostic prototype validation, not a full
-  distributed training claim.
+  stricter CUDA/NCCL gradient-slice and one-step optimizer comparison. It
+  compares dense GPT gradients with the corresponding local distributed GPT
+  parameter shards, including QKV head slices, row/column-parallel linear
+  slices, tied vocab shards, and replicated parameters after explicit
+  replicated-gradient synchronization. It then runs one SGD step and compares
+  the updated distributed shards with the updated dense parameter slices. This
+  is diagnostic prototype validation, not a full distributed training claim.
 - Optionally add a simple pipeline schedule visualization.

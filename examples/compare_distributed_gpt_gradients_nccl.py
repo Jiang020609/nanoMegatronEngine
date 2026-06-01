@@ -1,4 +1,4 @@
-"""Run a CUDA/NCCL distributed GPT gradient-slice equivalence comparison."""
+"""Run a CUDA/NCCL distributed GPT gradient and optimizer equivalence comparison."""
 
 from __future__ import annotations
 
@@ -18,7 +18,10 @@ _RTOL = 1e-4
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compare dense GPT gradients against CUDA/NCCL distributed GPT local gradient shards."
+        description=(
+            "Compare dense GPT gradients and one SGD step against CUDA/NCCL "
+            "distributed GPT local parameter shards."
+        )
     )
     parser.add_argument(
         "--preset",
@@ -27,6 +30,7 @@ def main() -> None:
         help="model shape preset; small is still a smoke test but exercises wider tensors",
     )
     parser.add_argument("--seed", type=int, default=13201, help="deterministic seed for model initialization")
+    parser.add_argument("--lr", type=float, default=1e-3, help="SGD learning rate for the one-step update check")
     parser.add_argument("--max-report", type=int, default=24, help="maximum failed/largest-error checks to print")
     parser.add_argument(
         "--no-strict",
@@ -38,7 +42,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if not _has_torchrun_env():
-        print("CUDA/NCCL distributed GPT gradient equivalence demo")
+        print("CUDA/NCCL distributed GPT gradient and optimizer equivalence demo")
         print("Run with torchrun on a CUDA PyTorch build with NCCL, for example:")
         print("  torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py")
         print(
@@ -46,7 +50,7 @@ def main() -> None:
             "examples/compare_distributed_gpt_gradients_nccl.py --preset small"
         )
         print("Strict validation is enabled by default; use --no-strict to print without failing.")
-        print("This compares local distributed gradient shards with dense GPT gradient slices.")
+        print("This compares local distributed gradient shards and one SGD update with dense GPT slices.")
         print("The main GPTModel path is not wired to real distributed TP.")
         print("No multi-node orchestration or speedup claims.")
         return
@@ -84,7 +88,13 @@ def _run_demo(args: argparse.Namespace) -> None:
                 "try --nproc_per_node=2 or --nproc_per_node=4 with the default presets"
             )
 
-        result = _compare_gradient_equivalence(world_size, device, preset=args.preset, seed=args.seed)
+        result = _compare_gradient_equivalence(
+            world_size,
+            device,
+            preset=args.preset,
+            seed=args.seed,
+            learning_rate=args.lr,
+        )
         torch.cuda.synchronize(device)
 
         if rank == 0:
@@ -107,7 +117,10 @@ def _compare_gradient_equivalence(
     device: torch.device,
     preset: str,
     seed: int,
+    learning_rate: float,
 ) -> dict[str, object]:
+    if learning_rate <= 0.0:
+        raise ValueError(f"learning_rate must be positive, got {learning_rate}")
     _make_cuda_math_deterministic_enough()
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -151,6 +164,13 @@ def _compare_gradient_equivalence(
     )
     _add_replicated_gradient_checks(local_checks, rank, dense, distributed)
 
+    dense_optimizer = torch.optim.SGD(dense.parameters(), lr=learning_rate)
+    distributed_optimizer = torch.optim.SGD(distributed.parameters(), lr=learning_rate)
+    dense_optimizer.step()
+    distributed_optimizer.step()
+    _add_sharded_parameter_checks(local_checks, rank, dense, distributed)
+    _add_replicated_parameter_checks(local_checks, rank, dense, distributed)
+
     all_checks = _gather_checks(local_checks)
     failed_checks = [check for check in all_checks if not bool(check["passed"])]
     tensor_checks = [check for check in all_checks if check["max_abs_error"] is not None]
@@ -166,6 +186,7 @@ def _compare_gradient_equivalence(
         "n_head": dense_config.n_head,
         "n_embd": dense_config.n_embd,
         "batch_shape": tuple(input_ids.shape),
+        "learning_rate": learning_rate,
         "atol": _ATOL,
         "rtol": _RTOL,
         "checks": all_checks,
@@ -306,6 +327,140 @@ def _add_replicated_gradient_checks(
     _append_replicated_pair(checks, rank, "ln_f.bias", dense.ln_f.bias, distributed.ln_f.bias)
 
 
+def _add_sharded_parameter_checks(
+    checks: list[dict[str, object]],
+    rank: int,
+    dense: GPTModel,
+    distributed: DistributedGPTModel,
+) -> None:
+    start = distributed.token_embedding.local_vocab_start
+    end = distributed.token_embedding.local_vocab_end
+    checks.append(
+        _make_tensor_check(
+            rank,
+            "token_embedding_lm_head.weight_shard",
+            "optimizer_sharded",
+            dense.token_embedding.weight[start:end],
+            distributed.token_embedding.weight_shards[0],
+        )
+    )
+
+    for index, (dense_block, distributed_block) in enumerate(zip(dense.blocks, distributed.blocks)):
+        prefix = f"blocks.{index}"
+        qkv = distributed_block.attn.qkv
+        checks.append(
+            _make_tensor_check(
+                rank,
+                f"{prefix}.attn.qkv.weight",
+                "optimizer_sharded",
+                _local_qkv_slice(dense_block.attn.qkv.weight, qkv),
+                distributed_block.attn.qkv.weight,
+            )
+        )
+        if dense_block.attn.qkv.bias is not None and distributed_block.attn.qkv.bias is not None:
+            checks.append(
+                _make_tensor_check(
+                    rank,
+                    f"{prefix}.attn.qkv.bias",
+                    "optimizer_sharded",
+                    _local_qkv_slice(dense_block.attn.qkv.bias, qkv),
+                    distributed_block.attn.qkv.bias,
+                )
+            )
+
+        attn_proj = distributed_block.attn.proj
+        checks.append(
+            _make_tensor_check(
+                rank,
+                f"{prefix}.attn.proj.weight",
+                "optimizer_sharded",
+                dense_block.attn.proj.weight[:, attn_proj.local_in_start : attn_proj.local_in_end],
+                distributed_block.attn.proj.weight,
+            )
+        )
+
+        dense_fc1 = dense_block.mlp.net[0]
+        dense_fc2 = dense_block.mlp.net[2]
+        fc1 = distributed_block.fc1
+        fc2 = distributed_block.fc2
+        checks.append(
+            _make_tensor_check(
+                rank,
+                f"{prefix}.mlp.fc1.weight",
+                "optimizer_sharded",
+                dense_fc1.weight[fc1.local_out_start : fc1.local_out_end],
+                distributed_block.fc1.weight,
+            )
+        )
+        if dense_fc1.bias is not None and distributed_block.fc1.bias is not None:
+            checks.append(
+                _make_tensor_check(
+                    rank,
+                    f"{prefix}.mlp.fc1.bias",
+                    "optimizer_sharded",
+                    dense_fc1.bias[fc1.local_out_start : fc1.local_out_end],
+                    distributed_block.fc1.bias,
+                )
+            )
+        checks.append(
+            _make_tensor_check(
+                rank,
+                f"{prefix}.mlp.fc2.weight",
+                "optimizer_sharded",
+                dense_fc2.weight[:, fc2.local_in_start : fc2.local_in_end],
+                distributed_block.fc2.weight,
+            )
+        )
+
+
+def _add_replicated_parameter_checks(
+    checks: list[dict[str, object]],
+    rank: int,
+    dense: GPTModel,
+    distributed: DistributedGPTModel,
+) -> None:
+    checks.append(
+        _make_tensor_check(
+            rank,
+            "position_embedding.weight",
+            "optimizer_replicated",
+            dense.position_embedding.weight,
+            distributed.position_embedding.weight,
+        )
+    )
+
+    for index, (dense_block, distributed_block) in enumerate(zip(dense.blocks, distributed.blocks)):
+        prefix = f"blocks.{index}"
+        _append_replicated_parameter_pair(
+            checks, rank, f"{prefix}.ln_1.weight", dense_block.ln_1.weight, distributed_block.ln_1.weight
+        )
+        _append_replicated_parameter_pair(
+            checks, rank, f"{prefix}.ln_1.bias", dense_block.ln_1.bias, distributed_block.ln_1.bias
+        )
+        _append_replicated_parameter_pair(
+            checks, rank, f"{prefix}.ln_2.weight", dense_block.ln_2.weight, distributed_block.ln_2.weight
+        )
+        _append_replicated_parameter_pair(
+            checks, rank, f"{prefix}.ln_2.bias", dense_block.ln_2.bias, distributed_block.ln_2.bias
+        )
+        if dense_block.attn.proj.bias is not None and distributed_block.attn.proj.bias is not None:
+            _append_replicated_parameter_pair(
+                checks,
+                rank,
+                f"{prefix}.attn.proj.bias",
+                dense_block.attn.proj.bias,
+                distributed_block.attn.proj.bias,
+            )
+        dense_fc2 = dense_block.mlp.net[2]
+        if dense_fc2.bias is not None and distributed_block.fc2.bias is not None:
+            _append_replicated_parameter_pair(
+                checks, rank, f"{prefix}.mlp.fc2.bias", dense_fc2.bias, distributed_block.fc2.bias
+            )
+
+    _append_replicated_parameter_pair(checks, rank, "ln_f.weight", dense.ln_f.weight, distributed.ln_f.weight)
+    _append_replicated_parameter_pair(checks, rank, "ln_f.bias", dense.ln_f.bias, distributed.ln_f.bias)
+
+
 def _append_replicated_pair(
     checks: list[dict[str, object]],
     rank: int,
@@ -320,6 +475,24 @@ def _append_replicated_pair(
             "replicated",
             _require_grad(dense_parameter, f"dense {name}"),
             _require_grad(distributed_parameter, f"distributed {name}"),
+        )
+    )
+
+
+def _append_replicated_parameter_pair(
+    checks: list[dict[str, object]],
+    rank: int,
+    name: str,
+    dense_parameter: torch.nn.Parameter,
+    distributed_parameter: torch.nn.Parameter,
+) -> None:
+    checks.append(
+        _make_tensor_check(
+            rank,
+            name,
+            "optimizer_replicated",
+            dense_parameter,
+            distributed_parameter,
         )
     )
 
@@ -468,7 +641,7 @@ def _print_report(
     tensor_checks = [check for check in checks if check["max_abs_error"] is not None]
     passed = len(checks) - len(failed_checks)
 
-    print("CUDA/NCCL distributed GPT gradient equivalence demo")
+    print("CUDA/NCCL distributed GPT gradient and optimizer equivalence demo")
     print(f"backend: {backend}")
     print(f"world_size: {result['world_size']}")
     print(f"cuda devices visible: {torch.cuda.device_count()}")
@@ -482,9 +655,10 @@ def _print_report(
     print(f"n_head: {result['n_head']}")
     print(f"n_embd: {result['n_embd']}")
     print(f"batch shape: {result['batch_shape']}")
+    print(f"SGD learning rate: {result['learning_rate']}")
     print(f"tolerance: atol={result['atol']}, rtol={result['rtol']}")
     print()
-    print("Gradient checks")
+    print("Equivalence checks")
     print(f"  total checks: {len(checks)}")
     print(f"  passed checks: {passed}")
     print(f"  failed checks: {len(failed_checks)}")
@@ -507,6 +681,7 @@ def _print_report(
     print()
     print("Note:")
     print("  This compares real dense GPT gradients with local distributed GPT gradient shards.")
+    print("  It also compares one SGD-updated dense parameter tensor with each local distributed shard.")
     print("  Sharded parameters are compared against the matching dense row/column/head slice.")
     print("  Replicated parameters are compared after explicit replicated-gradient synchronization.")
     print("  This is an isolated CUDA/NCCL prototype validation path.")
@@ -534,7 +709,7 @@ def _assert_strict_result(result: dict[str, object]) -> None:
     if len(failed_checks) > 12:
         preview += f", ... {len(failed_checks) - 12} more"
     raise AssertionError(
-        "strict CUDA/NCCL distributed GPT gradient equivalence failed checks: "
+        "strict CUDA/NCCL distributed GPT gradient/optimizer equivalence failed checks: "
         + preview
         + f"; max_abs_error={result['max_abs_error']}"
     )
