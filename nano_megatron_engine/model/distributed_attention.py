@@ -1,4 +1,4 @@
-"""CPU/Gloo distributed causal self-attention prototype."""
+"""Rank-local distributed causal self-attention prototype."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from nano_megatron_engine.parallel.collective_adapters import DistributedRankLoc
 
 
 class DistributedCausalSelfAttention(nn.Module):
-    """Rank-local CPU/Gloo tensor-parallel causal self-attention.
+    """Rank-local tensor-parallel causal self-attention.
 
     This module is an isolated prototype for learning distributed attention
     mechanics. Each rank owns local Q/K/V heads, computes attention for those
@@ -112,8 +112,7 @@ class DistributedCausalSelfAttention(nn.Module):
             raise ValueError(
                 f"distributed causal attention sequence length {seq_len} exceeds block_size {self.block_size}"
             )
-        if x.device.type != "cpu":
-            raise ValueError(f"DistributedCausalSelfAttention currently supports CPU/Gloo tensors only, got {x.device}")
+        self.collectives.validate_tensor_device(x, "DistributedCausalSelfAttention")
 
         local_qkv = self.qkv(x)
         query, key, value = local_qkv.split(self.local_hidden, dim=-1)

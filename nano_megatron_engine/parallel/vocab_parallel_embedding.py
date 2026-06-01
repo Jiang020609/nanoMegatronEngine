@@ -22,11 +22,10 @@ class VocabParallelEmbedding(nn.Module):
     uneven vocab partitions.
 
     Passing ``DistributedRankLocalCollectives`` switches to a module-level
-    CPU/Gloo prototype where each distributed rank owns one local vocab shard.
+    prototype where each distributed rank owns one local vocab shard.
     The distributed path currently requires strict divisibility:
-    ``num_embeddings % world_size == 0``. It is not wired into the GPT/model
-    path, does not use NCCL/GPU/multi-node orchestration, and does not claim
-    speedups.
+    ``num_embeddings % world_size == 0``. It is not wired into the main
+    ``GPTModel`` path, and does not claim speedups.
     """
 
     def __init__(
@@ -143,11 +142,7 @@ class VocabParallelEmbedding(nn.Module):
         return self.collectives.all_reduce_sum(local_outputs)
 
     def _forward_rank_local(self, input_ids: torch.Tensor) -> torch.Tensor:
-        if input_ids.device.type != "cpu":
-            raise ValueError(
-                "VocabParallelEmbedding distributed path supports CPU/Gloo tensors only, "
-                f"got {input_ids.device}"
-            )
+        self.collectives.validate_tensor_device(input_ids, "VocabParallelEmbedding")
 
         weight = self.weight_shards[0]
         local_output = torch.zeros(

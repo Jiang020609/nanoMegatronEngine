@@ -24,11 +24,10 @@ class VocabParallelLMHead(nn.Module):
     uneven vocab partitions.
 
     Passing ``DistributedRankLocalCollectives`` switches to a module-level
-    CPU/Gloo prototype where each distributed rank owns one local vocab-output
+    prototype where each distributed rank owns one local vocab-output
     shard. The distributed path currently requires strict divisibility:
     ``vocab_size % world_size == 0``. It is not wired into the GPT/model path,
-    does not use NCCL/GPU/multi-node orchestration, and does not claim
-    speedups.
+    and does not claim speedups.
     """
 
     def __init__(
@@ -165,11 +164,7 @@ class VocabParallelLMHead(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.is_rank_local:
-            if x.device.type != "cpu":
-                raise ValueError(
-                    "VocabParallelLMHead distributed path supports CPU/Gloo tensors only, "
-                    f"got {x.device}"
-                )
+            self.collectives.validate_tensor_device(x, "VocabParallelLMHead")
             bias = self.bias_shards[0] if self.bias_shards is not None else None
             return _DistributedVocabParallelLMHeadFunction.apply(
                 x,

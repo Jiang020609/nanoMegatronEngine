@@ -34,7 +34,8 @@ def main() -> None:
         print("  python examples/train_distributed_gpt_smoke.py --spawn 2")
         print("This is a CPU/Gloo prototype-local optimizer-loop smoke test.")
         print("It is not wired into GPTModel or the single-device Trainer.")
-        print("No NCCL, GPU, multi-node orchestration, speedup, or convergence claims.")
+        print("CUDA/NCCL smoke validation lives in compare_distributed_gpt_nccl.py.")
+        print("No multi-node orchestration, speedup, or convergence claims.")
         return
 
     _run_demo(args.steps)
@@ -73,7 +74,8 @@ def _run_demo(steps: int) -> None:
             print("Note:")
             print("  This is a CPU/Gloo prototype-local optimizer-loop smoke test.")
             print("  It does not claim dense-equivalent distributed training semantics.")
-            print("  GPTModel, Trainer, NCCL/GPU, multi-node orchestration, and speedup paths are not wired.")
+            print("  CUDA/NCCL smoke validation lives in compare_distributed_gpt_nccl.py.")
+            print("  GPTModel, Trainer, multi-node orchestration, and speedup paths are not wired.")
     finally:
         _destroy_process_group()
 

@@ -1,4 +1,4 @@
-"""CPU/Gloo distributed transformer block prototype."""
+"""Rank-local distributed transformer block prototype."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from nano_megatron_engine.parallel.collective_adapters import DistributedRankLoc
 
 
 class DistributedTransformerBlock(nn.Module):
-    """Rank-local CPU/Gloo transformer block prototype.
+    """Rank-local transformer block prototype.
 
     LayerNorm parameters are replicated on every rank. Attention uses
     ``DistributedCausalSelfAttention`` and the MLP composes column-parallel and
@@ -142,8 +142,7 @@ class DistributedTransformerBlock(nn.Module):
             raise ValueError(
                 f"distributed transformer block sequence length {x.shape[1]} exceeds block_size {self.block_size}"
             )
-        if x.device.type != "cpu":
-            raise ValueError(f"DistributedTransformerBlock currently supports CPU/Gloo tensors only, got {x.device}")
+        self.collectives.validate_tensor_device(x, "DistributedTransformerBlock")
 
         x = x + self.attn(self.ln_1(x))
         local_hidden = self.fc1(self.ln_2(x))

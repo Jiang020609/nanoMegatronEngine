@@ -12,9 +12,12 @@ from nano_megatron_engine.parallel.distributed_collectives import (
     distributed_all_gather,
     distributed_all_reduce_sum,
     distributed_reduce_scatter_sum,
+    get_backend,
+    get_expected_device_type,
     get_rank,
     get_world_size,
     is_distributed_initialized,
+    validate_rank_local_tensor_device,
 )
 from nano_megatron_engine.parallel.fake_tp import (
     fake_all_gather,
@@ -67,6 +70,15 @@ class RankLocalCollectiveProtocol(Protocol):
     def is_initialized(self) -> bool:
         """Return whether the distributed process group is initialized."""
 
+    def get_backend(self) -> str:
+        """Return the initialized distributed backend name."""
+
+    def get_expected_device_type(self) -> str:
+        """Return the tensor device type expected by the backend."""
+
+    def validate_tensor_device(self, tensor: torch.Tensor, op_name: str) -> None:
+        """Validate that a rank-local tensor is on the backend's device type."""
+
 
 @dataclass(frozen=True)
 class FakeShardListCollectives:
@@ -103,11 +115,12 @@ class FakeShardListCollectives:
 
 @dataclass(frozen=True)
 class DistributedRankLocalCollectives:
-    """Adapter for optional rank-local CPU/Gloo distributed collectives.
+    """Adapter for optional rank-local distributed collectives.
 
     Each process owns only its local tensor and torch.distributed performs the
-    collective across ranks. This is a low-level CPU/Gloo wrapper boundary and
-    is not yet integrated into GPT/model tensor parallelism.
+    collective across ranks. Gloo expects CPU tensors and NCCL expects CUDA
+    tensors. This is a low-level wrapper boundary and is not the main GPTModel
+    path.
     """
 
     group: object | None = None
@@ -129,3 +142,12 @@ class DistributedRankLocalCollectives:
 
     def is_initialized(self) -> bool:
         return is_distributed_initialized()
+
+    def get_backend(self) -> str:
+        return get_backend(group=self.group)
+
+    def get_expected_device_type(self) -> str:
+        return get_expected_device_type(group=self.group)
+
+    def validate_tensor_device(self, tensor: torch.Tensor, op_name: str) -> None:
+        validate_rank_local_tensor_device(tensor, op_name, group=self.group)

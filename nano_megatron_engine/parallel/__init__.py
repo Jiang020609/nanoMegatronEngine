@@ -11,11 +11,14 @@ from nano_megatron_engine.parallel.distributed_collectives import (
     distributed_all_gather,
     distributed_all_reduce_sum,
     distributed_reduce_scatter_sum,
+    get_backend,
+    get_expected_device_type,
     get_rank,
     get_world_size,
     init_distributed_from_env,
     is_distributed_available,
     is_distributed_initialized,
+    validate_rank_local_tensor_device,
 )
 from nano_megatron_engine.parallel.distributed_column_parallel_linear import DistributedColumnParallelLinear
 from nano_megatron_engine.parallel.distributed_qkv_parallel_linear import DistributedQKVParallelLinear
@@ -50,6 +53,8 @@ __all__ = [
     "fake_all_gather",
     "fake_all_reduce_sum",
     "fake_reduce_scatter_sum",
+    "get_backend",
+    "get_expected_device_type",
     "get_rank",
     "get_world_size",
     "init_distributed_from_env",
@@ -57,5 +62,6 @@ __all__ = [
     "is_distributed_initialized",
     "partition_range",
     "split_tensor_along_dim",
+    "validate_rank_local_tensor_device",
     "validate_divisible",
 ]

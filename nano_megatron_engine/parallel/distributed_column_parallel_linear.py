@@ -1,4 +1,4 @@
-"""CPU/Gloo distributed column-parallel linear prototype."""
+"""Rank-local distributed column-parallel linear prototype."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ from nano_megatron_engine.parallel.collective_adapters import DistributedRankLoc
 
 
 class DistributedColumnParallelLinear(nn.Module):
-    """Shard a linear layer's output features across distributed CPU/Gloo ranks.
+    """Shard a linear layer's output features across distributed ranks.
 
     This is a low-level prototype. Each process owns one rank-local weight
     shard and receives the full input tensor. It is not wired into the GPT model
-    path and does not use NCCL or GPU-specific communication.
+    path.
     """
 
     def __init__(
@@ -82,8 +82,7 @@ class DistributedColumnParallelLinear(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.shape[-1] != self.in_features:
             raise ValueError(f"expected input last dimension {self.in_features}, got {x.shape[-1]}")
-        if x.device.type != "cpu":
-            raise ValueError(f"DistributedColumnParallelLinear currently supports CPU/Gloo tensors only, got {x.device}")
+        self.collectives.validate_tensor_device(x, "DistributedColumnParallelLinear")
 
         return _DistributedColumnParallelLinearFunction.apply(
             x,

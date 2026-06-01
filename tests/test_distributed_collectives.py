@@ -8,6 +8,8 @@ from nano_megatron_engine.parallel import (
     distributed_all_gather,
     distributed_all_reduce_sum,
     distributed_reduce_scatter_sum,
+    get_backend,
+    get_expected_device_type,
     get_rank,
     get_world_size,
     init_distributed_from_env,
@@ -21,6 +23,8 @@ def test_distributed_public_api_imports():
     assert callable(distributed_all_reduce_sum)
     assert callable(distributed_all_gather)
     assert callable(distributed_reduce_scatter_sum)
+    assert callable(get_backend)
+    assert callable(get_expected_device_type)
 
 
 def test_distributed_wrappers_raise_cleanly_when_not_initialized():
@@ -54,7 +58,7 @@ def test_distributed_wrappers_validate_inputs_before_collectives():
         distributed_reduce_scatter_sum(torch.ones(2), dim=3)
 
     meta_tensor = torch.empty(2, device="meta")
-    with pytest.raises(ValueError, match="CPU/Gloo"):
+    with pytest.raises(ValueError, match="expects cpu tensors"):
         distributed_all_reduce_sum(meta_tensor)
 
     sparse_tensor = torch.eye(2).to_sparse()
@@ -66,8 +70,8 @@ def test_init_distributed_from_env_validates_contract(monkeypatch):
     if is_distributed_initialized():
         pytest.skip("process group already initialized by the test environment")
 
-    with pytest.raises(ValueError, match="CPU/Gloo"):
-        init_distributed_from_env("nccl")
+    with pytest.raises(ValueError, match="backend='gloo'.*backend='nccl'"):
+        init_distributed_from_env("mpi")
     with pytest.raises(ValueError, match="timeout_seconds"):
         init_distributed_from_env(timeout_seconds=0)
 
@@ -139,6 +143,8 @@ def _distributed_worker(rank: int, world_size: int, port: int) -> None:
         init_distributed_from_env("gloo")
         assert get_rank() == rank
         assert get_world_size() == world_size
+        assert get_backend() == "gloo"
+        assert get_expected_device_type() == "cpu"
 
         local = torch.full((2, 3), float(rank + 1))
         reduced = distributed_all_reduce_sum(local)
@@ -185,6 +191,8 @@ def _world_size_one_worker(rank: int, port: int) -> None:
         init_distributed_from_env("gloo")
         assert get_rank() == 0
         assert get_world_size() == 1
+        assert get_backend() == "gloo"
+        assert get_expected_device_type() == "cpu"
 
         local = torch.arange(6, dtype=torch.float32).view(2, 3)
         assert torch.equal(distributed_all_reduce_sum(local), local)

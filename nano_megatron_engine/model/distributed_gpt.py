@@ -1,4 +1,4 @@
-"""CPU/Gloo distributed GPT forward prototype."""
+"""Rank-local distributed GPT forward prototype."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from nano_megatron_engine.parallel.collective_adapters import DistributedRankLoc
 
 
 class DistributedGPTModel(nn.Module):
-    """Rank-local CPU/Gloo GPT forward prototype.
+    """Rank-local GPT forward prototype.
 
     This model composes the module-level distributed prototypes into a full
     forward path. It is not wired into ``GPTModel`` and is not a training
@@ -130,8 +130,7 @@ class DistributedGPTModel(nn.Module):
             raise TypeError(f"distributed GPT expected input_ids to be a torch.Tensor, got {type(input_ids).__name__}")
         if input_ids.ndim != 2:
             raise ValueError("distributed GPT input_ids must have shape [batch, sequence]")
-        if input_ids.device.type != "cpu":
-            raise ValueError(f"DistributedGPTModel currently supports CPU/Gloo tensors only, got {input_ids.device}")
+        self.collectives.validate_tensor_device(input_ids, "DistributedGPTModel")
         batch_size, seq_len = input_ids.shape
         if seq_len > self.config.block_size:
             raise ValueError(
@@ -139,6 +138,8 @@ class DistributedGPTModel(nn.Module):
             )
         if targets is not None and targets.shape != input_ids.shape:
             raise ValueError("distributed GPT targets must have the same shape as input_ids")
+        if targets is not None:
+            self.collectives.validate_tensor_device(targets, "DistributedGPTModel targets")
         if targets is not None and seq_len < 2:
             raise ValueError("distributed GPT sequence length must be at least 2 when computing next-token loss")
 
@@ -176,7 +177,7 @@ class DistributedGPTModel(nn.Module):
         """Average gradients for parameters replicated on every rank.
 
         Tensor-parallel shards remain rank-local and are intentionally not
-        synchronized here. This helper is for explicit CPU/Gloo prototype
+        synchronized here. This helper is for explicit distributed prototype
         smoke tests before a local optimizer step; it is not a full distributed
         training engine.
         """

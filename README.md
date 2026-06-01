@@ -42,10 +42,10 @@ the training mechanics explicit.
 | --- | --- | --- |
 | Dense GPT training | CPU-runnable tiny GPT, trainer, microbatching, gradient accumulation, activation checkpointing | Educational scale only |
 | Fake tensor parallel layers | Single-process MLP, attention, embeddings, LM head, and fake collectives | Local tensors only |
-| Distributed collectives | Optional CPU/Gloo wrappers in `distributed_collectives.py` | Not wired into GPT TP; normal pytest does not require distributed setup |
-| Distributed module prototypes | CPU/Gloo column/row linear modules, vocab modules, and MLP composition | Module-level only; not wired into GPT/model code |
+| Distributed collectives | Optional CPU/Gloo wrappers and experimental CUDA/NCCL rank-local wrappers in `distributed_collectives.py` | Not wired into the main GPT path; normal pytest does not require distributed setup |
+| Distributed module prototypes | CPU/Gloo modules plus an experimental CUDA/NCCL smoke path for the isolated distributed GPT prototype | Prototype-only; main `GPTModel` is still unchanged |
 | Collective adapters | Explicit fake shard-list and distributed rank-local adapter boundaries | They document semantics; they do not make the APIs interchangeable |
-| Accelerators | CUDA is optional for existing benchmarks | No NCCL, custom CUDA, FP8, or GPU requirement |
+| Accelerators | CUDA is optional for benchmarks and the NCCL smoke example | No custom CUDA, FP8, multi-node orchestration, or GPU requirement for default tests |
 | Performance claims | None | No Megatron-LM parity or speedup claims |
 
 ## Install
@@ -79,6 +79,7 @@ python examples/compare_distributed_attention.py --spawn 2
 python examples/compare_distributed_transformer_block.py --spawn 2
 python examples/compare_distributed_gpt_forward.py --spawn 2
 python examples/train_distributed_gpt_smoke.py --spawn 2
+torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py
 ```
 
 ## v0.2 Fake Tensor Parallelism
@@ -379,4 +380,12 @@ or speedup claims.
   smoke test over the isolated distributed GPT prototype. It is intentionally
   separate from `GPTModel` and `Trainer`, and it does not claim convergence,
   speedup, or full Megatron-style training semantics.
+- `torchrun --standalone --nproc_per_node=4
+  examples/compare_distributed_gpt_nccl.py` runs a tiny CUDA/NCCL smoke
+  comparison over the same isolated distributed GPT prototype. It checks
+  forward equivalence against a dense GPT, loss backward, explicit replicated
+  gradient synchronization, one local optimizer step, and activation
+  checkpoint backward plumbing. This is for single-node GPU/NCCL validation of
+  the prototype path only; the main `GPTModel` path is not wired to real
+  distributed TP, and there are no multi-node orchestration or speedup claims.
 - Optionally add a simple pipeline schedule visualization.

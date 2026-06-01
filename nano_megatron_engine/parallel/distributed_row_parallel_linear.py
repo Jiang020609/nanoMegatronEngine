@@ -1,4 +1,4 @@
-"""CPU/Gloo distributed row-parallel linear prototype."""
+"""Rank-local distributed row-parallel linear prototype."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from nano_megatron_engine.parallel.collective_adapters import DistributedRankLoc
 
 
 class DistributedRowParallelLinear(nn.Module):
-    """Shard a linear layer's input features across distributed CPU/Gloo ranks.
+    """Shard a linear layer's input features across distributed ranks.
 
     Each rank owns a contiguous slice of the input feature dimension and the
     matching local weight columns. Partial outputs are summed across ranks, and
@@ -87,8 +87,7 @@ class DistributedRowParallelLinear(nn.Module):
                 f"DistributedRowParallelLinear with {mode} expected input last dimension "
                 f"{expected_features}, got {x.shape[-1]}"
             )
-        if x.device.type != "cpu":
-            raise ValueError(f"DistributedRowParallelLinear currently supports CPU/Gloo tensors only, got {x.device}")
+        self.collectives.validate_tensor_device(x, "DistributedRowParallelLinear")
 
         local_x = x if self.input_is_parallel else x[..., self.local_in_start : self.local_in_end]
         partial_output = F.linear(local_x, self.weight, bias=None)

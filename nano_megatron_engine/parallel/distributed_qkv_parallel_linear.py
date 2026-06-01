@@ -1,4 +1,4 @@
-"""CPU/Gloo distributed QKV projection prototype."""
+"""Rank-local distributed QKV projection prototype."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ class DistributedQKVParallelLinear(nn.Module):
     Dense GPT attention usually stores QKV projection rows as
     ``[Q_all, K_all, V_all]``. A plain column-parallel split over
     ``3 * hidden_size`` would not preserve that grouping, so this prototype
-    gives each CPU/Gloo rank its local Q heads, local K heads, and local V
+    gives each distributed rank its local Q heads, local K heads, and local V
     heads in ``[Q_local, K_local, V_local]`` order.
     """
 
@@ -121,8 +121,7 @@ class DistributedQKVParallelLinear(nn.Module):
                 f"distributed QKV expected input last dimension hidden_size={self.hidden_size}, "
                 f"got {x.shape[-1]}"
             )
-        if x.device.type != "cpu":
-            raise ValueError(f"DistributedQKVParallelLinear currently supports CPU/Gloo tensors only, got {x.device}")
+        self.collectives.validate_tensor_device(x, "DistributedQKVParallelLinear")
         return F.linear(x, self.weight, self.bias)
 
     def extra_repr(self) -> str:

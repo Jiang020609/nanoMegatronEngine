@@ -1,40 +1,31 @@
-"""Compare dense GPT forward with a CPU/Gloo distributed GPT prototype."""
+"""Run a tiny CUDA/NCCL distributed GPT prototype smoke comparison."""
 
 from __future__ import annotations
 
 import argparse
 import os
-import socket
 
 import torch
 
 from nano_megatron_engine.model.config import GPTConfig
 from nano_megatron_engine.model.distributed_gpt import DistributedGPTModel
 from nano_megatron_engine.model.gpt import GPTModel
-from nano_megatron_engine.parallel import get_rank, get_world_size, init_distributed_from_env
+from nano_megatron_engine.parallel import get_backend, get_rank, get_world_size, init_distributed_from_env
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compare dense GPT forward with a CPU/Gloo distributed GPT prototype."
+        description="Run a tiny CUDA/NCCL distributed GPT prototype smoke comparison."
     )
-    parser.add_argument("--spawn", type=int, default=0, help="spawn this many local CPU/Gloo worker processes")
-    args = parser.parse_args()
-
-    if args.spawn < 0:
-        parser.error("--spawn must be non-negative")
-    if args.spawn > 0:
-        _spawn_workers(args.spawn)
-        return
+    parser.parse_args()
 
     if not _has_torchrun_env():
-        print("Distributed GPT forward demo")
-        print("Run with:")
-        print("  python examples/compare_distributed_gpt_forward.py --spawn 2")
-        print("This demo uses CPU/Gloo module-level distributed GPT forward prototypes.")
-        print("Training loops and real distributed GPT TP are not wired yet.")
-        print("The optimizer section is a one-step smoke check only.")
-        print("CUDA/NCCL smoke validation lives in compare_distributed_gpt_nccl.py.")
+        print("CUDA/NCCL distributed GPT smoke demo")
+        print("Run with torchrun on a CUDA PyTorch build with NCCL, for example:")
+        print("  torchrun --standalone --nproc_per_node=2 examples/compare_distributed_gpt_nccl.py")
+        print("  torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py")
+        print("This is an isolated distributed GPT prototype smoke path.")
+        print("The main GPTModel path is not wired to real distributed TP.")
         print("No multi-node orchestration or speedup claims.")
         return
 
@@ -42,19 +33,41 @@ def main() -> None:
 
 
 def _run_demo() -> None:
-    init_distributed_from_env("gloo")
+    import torch.distributed as dist
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA/NCCL distributed GPT smoke requires torch.cuda.is_available()")
+    if not dist.is_available() or not hasattr(dist, "is_nccl_available") or not dist.is_nccl_available():
+        raise RuntimeError("CUDA/NCCL distributed GPT smoke requires a PyTorch build with NCCL support")
+
+    local_rank = _local_rank()
+    if local_rank >= torch.cuda.device_count():
+        raise ValueError(
+            f"LOCAL_RANK={local_rank} is outside the visible CUDA device count {torch.cuda.device_count()}"
+        )
+    torch.cuda.set_device(local_rank)
+    device = torch.device("cuda", local_rank)
+
+    init_distributed_from_env("nccl")
     try:
         rank = get_rank()
         world_size = get_world_size()
-        if world_size != 2:
-            raise ValueError("this tiny demo expects --spawn 2")
+        backend = get_backend()
+        if _dense_config().n_head % world_size != 0 or _dense_config().vocab_size % world_size != 0:
+            raise ValueError(
+                "this tiny CUDA/NCCL demo expects world_size to divide n_head=4 and vocab_size=32; "
+                "try --nproc_per_node=2 or --nproc_per_node=4"
+            )
 
-        result = _compare_gpt_forward(world_size)
+        result = _compare_gpt_forward(world_size, device)
+        torch.cuda.synchronize(device)
 
         if rank == 0:
-            print("Distributed GPT forward demo")
-            print("backend: gloo")
+            print("CUDA/NCCL distributed GPT smoke demo")
+            print(f"backend: {backend}")
             print(f"world_size: {world_size}")
+            print(f"cuda devices visible: {torch.cuda.device_count()}")
+            print(f"rank 0 device: {device}")
             print(f"vocab_size: {result['vocab_size']}")
             print(f"block_size: {result['block_size']}")
             print(f"n_layer: {result['n_layer']}")
@@ -88,24 +101,27 @@ def _run_demo() -> None:
             print(f"  activation checkpoint backward smoke: {result['activation_checkpoint_backward_smoke']}")
             print()
             print("Note:")
-            print("  This is a CPU/Gloo distributed GPT forward prototype.")
+            print("  This is a CUDA/NCCL smoke path for the isolated distributed GPT prototype.")
             print("  The backward and optimizer sections check local plumbing only.")
             print("  Replicated gradient synchronization is explicit and prototype-local.")
             print("  Full dense-equivalent distributed GPT training is not claimed yet.")
             print("  Real distributed GPT TP is not wired into the main GPTModel path.")
-            print("  CUDA/NCCL smoke validation lives in compare_distributed_gpt_nccl.py.")
             print("  No multi-node orchestration or speedup claims.")
     finally:
-        _destroy_process_group()
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
 
 
-def _compare_gpt_forward(world_size: int) -> dict[str, object]:
+def _compare_gpt_forward(world_size: int, device: torch.device) -> dict[str, object]:
+    _make_cuda_math_deterministic_enough()
     torch.manual_seed(13101)
+    torch.cuda.manual_seed_all(13101)
+
     dense_config = _dense_config()
     distributed_config = _distributed_config(world_size)
-    dense = GPTModel(dense_config)
+    dense = GPTModel(dense_config).to(device)
     dense.eval()
-    distributed = DistributedGPTModel(distributed_config)
+    distributed = DistributedGPTModel(distributed_config).to(device)
     distributed.eval()
     distributed.copy_from_dense_(dense)
     shard_summaries = _gather_shard_summaries(distributed.local_shard_summary())
@@ -114,14 +130,17 @@ def _compare_gpt_forward(world_size: int) -> dict[str, object]:
         [
             [0, 1, 16, 31, 4],
             [17, 2, 30, 8, 15],
-        ]
+        ],
+        device=device,
     )
     targets = torch.tensor(
         [
             [1, 16, 31, 4, 5],
             [2, 30, 8, 15, 0],
-        ]
+        ],
+        device=device,
     )
+
     dense_logits, dense_loss = dense(input_ids, targets)
     distributed_logits, distributed_loss = distributed(input_ids, targets)
     assert dense_loss is not None
@@ -138,8 +157,9 @@ def _compare_gpt_forward(world_size: int) -> dict[str, object]:
     distributed_tied_vocab_grad = distributed.token_embedding.weight_shards[0].grad
     if distributed_tied_vocab_grad.shape != dense_tied_vocab_grad.shape:
         raise AssertionError("distributed GPT tied vocab gradient shard shape does not match the dense slice shape")
+
     optimizer_result = _run_optimizer_step_smoke(distributed, input_ids, targets)
-    activation_checkpoint_result = _run_activation_checkpointing_smoke(world_size, input_ids, targets)
+    activation_checkpoint_result = _run_activation_checkpointing_smoke(world_size, input_ids, targets, device)
 
     return {
         "vocab_size": dense_config.vocab_size,
@@ -199,70 +219,6 @@ def _distributed_checkpoint_config(world_size: int) -> GPTConfig:
     )
 
 
-def _spawn_workers(world_size: int) -> None:
-    if world_size < 1:
-        raise ValueError("--spawn must be at least 1")
-
-    import torch.multiprocessing as mp
-
-    print(f"Spawning {world_size} local CPU/Gloo worker process(es).", flush=True)
-    port = _find_free_port()
-    mp.spawn(_spawn_worker, args=(world_size, port), nprocs=world_size, join=True)
-
-
-def _spawn_worker(rank: int, world_size: int, port: int) -> None:
-    os.environ["MASTER_ADDR"] = "127.0.0.1"
-    os.environ["MASTER_PORT"] = str(port)
-    os.environ["RANK"] = str(rank)
-    os.environ["WORLD_SIZE"] = str(world_size)
-    os.environ.setdefault("USE_LIBUV", "0")
-    _run_demo()
-
-
-def _max_abs_error(expected: torch.Tensor, actual: torch.Tensor) -> float:
-    return float((expected - actual).abs().max().item())
-
-
-def _outputs_close(expected: torch.Tensor, actual: torch.Tensor) -> bool:
-    return bool(torch.allclose(expected, actual, atol=1e-6, rtol=1e-5))
-
-
-def _assert_all_trainable_grads_are_finite(model: torch.nn.Module) -> None:
-    if not _all_trainable_grads_are_finite(model):
-        raise AssertionError("distributed GPT prototype produced missing or non-finite gradients")
-
-
-def _all_trainable_grads_are_finite(model: torch.nn.Module) -> bool:
-    grads = [parameter.grad for parameter in model.parameters() if parameter.requires_grad]
-    if not grads:
-        return False
-    return all(grad is not None and torch.isfinite(grad).all() for grad in grads)
-
-
-def _gather_shard_summaries(summary: dict[str, object]) -> list[dict[str, object]]:
-    import torch.distributed as dist
-
-    summaries: list[dict[str, object] | None] = [None for _ in range(dist.get_world_size())]
-    dist.all_gather_object(summaries, summary)
-    return [item for item in summaries if item is not None]
-
-
-def _format_shard_summary(summary: dict[str, object]) -> str:
-    token_embedding = summary["token_embedding"]
-    lm_head = summary["lm_head"]
-    blocks = summary["blocks"]
-    first_block = blocks[0]
-    attention = first_block["attention"]
-    mlp = first_block["mlp"]
-    return (
-        f"  rank {summary['rank']}: params={summary['local_parameter_count']} "
-        f"token_vocab={token_embedding['vocab_range']} token_weight={token_embedding['weight_shape']} "
-        f"lm_head_weight={lm_head['weight_shape']} tied={lm_head['tied_to_token_embedding']} "
-        f"blocks={len(blocks)} block0_qkv={attention['qkv_weight_shape']} "
-        f"block0_fc1={mlp['fc1_weight_shape']} block0_fc2={mlp['fc2_weight_shape']}"
-    )
-
-
 def _run_optimizer_step_smoke(
     model: DistributedGPTModel,
     input_ids: torch.Tensor,
@@ -299,9 +255,11 @@ def _run_activation_checkpointing_smoke(
     world_size: int,
     input_ids: torch.Tensor,
     targets: torch.Tensor,
+    device: torch.device,
 ) -> dict[str, object]:
     torch.manual_seed(13102)
-    model = DistributedGPTModel(_distributed_checkpoint_config(world_size))
+    torch.cuda.manual_seed_all(13102)
+    model = DistributedGPTModel(_distributed_checkpoint_config(world_size)).to(device)
     model.train()
     _, loss = model(input_ids, targets)
     if loss is None or not torch.isfinite(loss):
@@ -314,21 +272,65 @@ def _run_activation_checkpointing_smoke(
     return {"activation_checkpoint_backward_smoke": True}
 
 
-def _has_torchrun_env() -> bool:
-    return all(name in os.environ for name in ("RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"))
-
-
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
-def _destroy_process_group() -> None:
+def _gather_shard_summaries(summary: dict[str, object]) -> list[dict[str, object]]:
     import torch.distributed as dist
 
-    if dist.is_available() and dist.is_initialized():
-        dist.destroy_process_group()
+    summaries: list[dict[str, object] | None] = [None for _ in range(dist.get_world_size())]
+    dist.all_gather_object(summaries, summary)
+    return [item for item in summaries if item is not None]
+
+
+def _format_shard_summary(summary: dict[str, object]) -> str:
+    token_embedding = summary["token_embedding"]
+    lm_head = summary["lm_head"]
+    blocks = summary["blocks"]
+    first_block = blocks[0]
+    attention = first_block["attention"]
+    mlp = first_block["mlp"]
+    return (
+        f"  rank {summary['rank']}: params={summary['local_parameter_count']} "
+        f"token_vocab={token_embedding['vocab_range']} token_weight={token_embedding['weight_shape']} "
+        f"lm_head_weight={lm_head['weight_shape']} tied={lm_head['tied_to_token_embedding']} "
+        f"blocks={len(blocks)} block0_qkv={attention['qkv_weight_shape']} "
+        f"block0_fc1={mlp['fc1_weight_shape']} block0_fc2={mlp['fc2_weight_shape']}"
+    )
+
+
+def _max_abs_error(expected: torch.Tensor, actual: torch.Tensor) -> float:
+    return float((expected - actual).abs().max().item())
+
+
+def _outputs_close(expected: torch.Tensor, actual: torch.Tensor) -> bool:
+    return bool(torch.allclose(expected, actual, atol=1e-5, rtol=1e-5))
+
+
+def _assert_all_trainable_grads_are_finite(model: torch.nn.Module) -> None:
+    if not _all_trainable_grads_are_finite(model):
+        raise AssertionError("distributed GPT prototype produced missing or non-finite gradients")
+
+
+def _all_trainable_grads_are_finite(model: torch.nn.Module) -> bool:
+    grads = [parameter.grad for parameter in model.parameters() if parameter.requires_grad]
+    if not grads:
+        return False
+    return all(grad is not None and torch.isfinite(grad).all() for grad in grads)
+
+
+def _make_cuda_math_deterministic_enough() -> None:
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
+
+def _local_rank() -> int:
+    raw_local_rank = os.environ.get("LOCAL_RANK", os.environ["RANK"])
+    try:
+        return int(raw_local_rank)
+    except ValueError as exc:
+        raise ValueError(f"LOCAL_RANK must be an integer, got {raw_local_rank!r}") from exc
+
+
+def _has_torchrun_env() -> bool:
+    return all(name in os.environ for name in ("RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"))
 
 
 if __name__ == "__main__":

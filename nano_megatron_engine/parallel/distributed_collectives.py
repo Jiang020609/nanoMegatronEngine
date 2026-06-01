@@ -1,4 +1,4 @@
-"""Optional CPU/Gloo distributed collective wrappers."""
+"""Optional rank-local distributed collective wrappers."""
 
 from __future__ import annotations
 
@@ -9,7 +9,10 @@ import torch
 
 from nano_megatron_engine.parallel.fake_tp import partition_range
 
-_SUPPORTED_BACKEND = "gloo"
+_SUPPORTED_BACKENDS = {
+    "gloo": "cpu",
+    "nccl": "cuda",
+}
 _REQUIRED_ENV_VARS = ("RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT")
 
 
@@ -36,11 +39,7 @@ def is_distributed_initialized() -> bool:
 def init_distributed_from_env(backend: str = "gloo", timeout_seconds: int = 60) -> None:
     """Initialize torch.distributed using torchrun-style environment variables."""
 
-    if backend != _SUPPORTED_BACKEND:
-        raise ValueError(
-            "nanoMegatronEngine distributed wrappers currently support CPU/Gloo only, "
-            f"got backend={backend!r}"
-        )
+    backend = _normalize_backend(backend)
     if timeout_seconds <= 0:
         raise ValueError(f"timeout_seconds must be positive, got {timeout_seconds}")
 
@@ -48,15 +47,22 @@ def init_distributed_from_env(backend: str = "gloo", timeout_seconds: int = 60) 
     if not dist.is_available():
         raise RuntimeError(
             "torch.distributed is not available in this PyTorch build; "
-            "CPU/Gloo wrappers cannot be initialized with init_distributed_from_env"
-        )
+            "distributed wrappers cannot be initialized with init_distributed_from_env"
+    )
+    _validate_backend_runtime(dist, backend)
     if dist.is_initialized():
+        initialized_backend = _backend_name(dist.get_backend())
+        if initialized_backend != backend:
+            raise RuntimeError(
+                "torch.distributed is already initialized with "
+                f"backend={initialized_backend!r}; requested backend={backend!r}"
+            )
         return
 
     missing = [name for name in _REQUIRED_ENV_VARS if name not in os.environ]
     if missing:
         raise RuntimeError(
-            "torch.distributed CPU/Gloo initialization via init_distributed_from_env "
+            "torch.distributed initialization via init_distributed_from_env "
             "requires torchrun-style environment variables: "
             + ", ".join(missing)
         )
@@ -81,10 +87,33 @@ def get_world_size(group: object | None = None) -> int:
     return int(dist.get_world_size(group=group))
 
 
+def get_backend(group: object | None = None) -> str:
+    """Return the current distributed backend name."""
+
+    dist = _require_initialized()
+    return _backend_name(dist.get_backend(group=group))
+
+
+def get_expected_device_type(group: object | None = None) -> str:
+    """Return the tensor device type expected by the current backend."""
+
+    return _expected_device_type_for_backend(get_backend(group=group))
+
+
+def validate_rank_local_tensor_device(
+    tensor: torch.Tensor,
+    op_name: str,
+    group: object | None = None,
+) -> None:
+    """Validate that a rank-local tensor matches the initialized backend device."""
+
+    _validate_rank_local_tensor(tensor, op_name, group=group)
+
+
 def distributed_all_reduce_sum(tensor: torch.Tensor, group: object | None = None) -> torch.Tensor:
     """All-reduce a tensor by summing across ranks and returning a new tensor."""
 
-    _validate_cpu_tensor(tensor, "distributed_all_reduce_sum")
+    _validate_rank_local_tensor(tensor, "distributed_all_reduce_sum", group=group)
     dist = _require_initialized()
     _validate_world_metadata(
         dist,
@@ -103,7 +132,7 @@ def distributed_all_reduce_sum(tensor: torch.Tensor, group: object | None = None
 def distributed_all_gather(tensor: torch.Tensor, dim: int = -1, group: object | None = None) -> torch.Tensor:
     """All-gather rank-local tensors, supporting uneven sizes along dim."""
 
-    _validate_cpu_tensor(tensor, "distributed_all_gather")
+    _validate_rank_local_tensor(tensor, "distributed_all_gather", group=group)
     dim = _normalize_dim(dim, tensor.ndim)
     dist = _require_initialized()
     world_size = int(dist.get_world_size(group=group))
@@ -138,7 +167,7 @@ def distributed_reduce_scatter_sum(
 ) -> torch.Tensor:
     """Reduce by sum, then return this rank's contiguous output partition."""
 
-    _validate_cpu_tensor(tensor, "distributed_reduce_scatter_sum")
+    _validate_rank_local_tensor(tensor, "distributed_reduce_scatter_sum", group=group)
     dim = _normalize_dim(dim, tensor.ndim)
     reduced = distributed_all_reduce_sum(tensor, group=group)
     rank = get_rank(group=group)
@@ -154,7 +183,7 @@ def _distributed_module():
         import torch.distributed as dist
     except (ImportError, RuntimeError) as exc:
         raise RuntimeError(
-            "torch.distributed could not be imported; CPU/Gloo wrappers cannot be initialized "
+            "torch.distributed could not be imported; distributed wrappers cannot be initialized "
             "with init_distributed_from_env"
         ) from exc
     return dist
@@ -165,23 +194,27 @@ def _require_initialized():
     if not dist.is_available():
         raise RuntimeError(
             "torch.distributed is not available in this PyTorch build; "
-            "CPU/Gloo wrappers cannot be initialized with init_distributed_from_env"
+            "distributed wrappers cannot be initialized with init_distributed_from_env"
         )
     if not dist.is_initialized():
         raise RuntimeError(
-            "torch.distributed is not initialized for CPU/Gloo wrappers; "
+            "torch.distributed is not initialized for distributed wrappers; "
             "call init_distributed_from_env first"
         )
     return dist
 
 
-def _validate_cpu_tensor(tensor: torch.Tensor, op_name: str) -> None:
+def _validate_rank_local_tensor(tensor: torch.Tensor, op_name: str, group: object | None = None) -> None:
     if not isinstance(tensor, torch.Tensor):
         raise TypeError(f"{op_name} expects a torch.Tensor input, got {type(tensor).__name__}")
-    if tensor.device.type != "cpu":
-        raise ValueError(f"{op_name} currently supports CPU/Gloo tensors only, got device={tensor.device}")
     if tensor.layout != torch.strided:
         raise ValueError(f"{op_name} expects a dense strided tensor, got layout={tensor.layout}")
+    expected_device_type = _expected_device_type_for_rank_local_tensor(group=group)
+    if tensor.device.type != expected_device_type:
+        raise ValueError(
+            f"{op_name} expects {expected_device_type} tensors for the initialized distributed backend, "
+            f"got device={tensor.device}"
+        )
 
 
 def _normalize_dim(dim: int, ndim: int) -> int:
@@ -206,6 +239,8 @@ def _validate_world_metadata(
     world_size = int(dist.get_world_size(group=group))
     if world_size < 1:
         raise RuntimeError(f"torch.distributed returned invalid world_size={world_size}")
+    backend = _backend_name(dist.get_backend(group=group))
+    expected_device_type = _expected_device_type_for_backend(backend)
 
     local_metadata = {
         "shape": tuple(tensor.shape),
@@ -219,6 +254,11 @@ def _validate_world_metadata(
     reference = metadata[0]
     reference_shape = reference["shape"]
     reference_dtype = reference["dtype"]
+    if reference["device_type"] != expected_device_type:
+        raise ValueError(
+            f"{op_name} expects {expected_device_type} tensors for backend={backend}, "
+            f"rank 0 has device_type={reference['device_type']}"
+        )
     for rank, item in enumerate(metadata[1:], start=1):
         shape = item["shape"]
         if item["dtype"] != reference_dtype:
@@ -226,8 +266,11 @@ def _validate_world_metadata(
                 f"{op_name} requires matching tensor dtypes across ranks, "
                 f"rank 0 has {reference_dtype} but rank {rank} has {item['dtype']}"
             )
-        if item["device_type"] != "cpu":
-            raise ValueError(f"{op_name} currently supports CPU/Gloo tensors only")
+        if item["device_type"] != expected_device_type:
+            raise ValueError(
+                f"{op_name} expects {expected_device_type} tensors for backend={backend}, "
+                f"rank {rank} has device_type={item['device_type']}"
+            )
         if len(shape) != len(reference_shape):
             raise ValueError(f"{op_name} tensors must have the same rank on every distributed rank")
         if match_shape and shape != reference_shape:
@@ -256,9 +299,49 @@ def _validate_metadata_object(item: dict[str, object] | None, op_name: str) -> d
         raise RuntimeError(f"{op_name} gathered invalid tensor shape metadata")
     if not isinstance(dtype, str):
         raise RuntimeError(f"{op_name} gathered invalid tensor dtype metadata")
-    if device_type != "cpu":
-        raise ValueError(f"{op_name} currently supports CPU/Gloo tensors only")
+    if not isinstance(device_type, str):
+        raise RuntimeError(f"{op_name} gathered invalid tensor device metadata")
     return item
+
+
+def _normalize_backend(backend: str) -> str:
+    if not isinstance(backend, str):
+        raise TypeError(f"backend must be a string, got {type(backend).__name__}")
+    backend_name = backend.lower()
+    if backend_name not in _SUPPORTED_BACKENDS:
+        supported = ", ".join(sorted(_SUPPORTED_BACKENDS))
+        raise ValueError(
+            "nanoMegatronEngine distributed wrappers support backend='gloo' for CPU tensors "
+            f"and backend='nccl' for CUDA tensors, got backend={backend!r}; supported: {supported}"
+        )
+    return backend_name
+
+
+def _backend_name(backend: object) -> str:
+    name = str(backend).lower()
+    if "." in name:
+        name = name.rsplit(".", 1)[-1]
+    return name
+
+
+def _expected_device_type_for_backend(backend: str) -> str:
+    return _SUPPORTED_BACKENDS[_normalize_backend(backend)]
+
+
+def _expected_device_type_for_rank_local_tensor(group: object | None) -> str:
+    if not is_distributed_initialized():
+        return "cpu"
+    return get_expected_device_type(group=group)
+
+
+def _validate_backend_runtime(dist, backend: str) -> None:
+    if backend == "gloo" and hasattr(dist, "is_gloo_available") and not dist.is_gloo_available():
+        raise RuntimeError("backend='gloo' requires a PyTorch build with Gloo support")
+    if backend == "nccl":
+        if not hasattr(dist, "is_nccl_available") or not dist.is_nccl_available():
+            raise RuntimeError("backend='nccl' requires a PyTorch build with NCCL support")
+        if not torch.cuda.is_available():
+            raise RuntimeError("backend='nccl' requires CUDA to be available")
 
 
 def _validate_env_rank_world_size() -> tuple[int, int]:
