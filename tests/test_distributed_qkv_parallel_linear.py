@@ -60,6 +60,7 @@ def _distributed_qkv_worker(rank: int, world_size: int, port: int) -> None:
         _assert_local_qkv_output_matches_dense_slices()
         _assert_bias_false_matches_dense_slices()
         _assert_copy_from_dense_slices_rank_local_parameters()
+        _assert_input_gradients_match_dense_qkv()
         _assert_invalid_num_heads_divisibility_raises()
         _assert_invalid_forward_input_shape_raises()
     finally:
@@ -131,6 +132,53 @@ def _assert_copy_from_dense_slices_rank_local_parameters() -> None:
     torch.testing.assert_close(layer.weight, expected_weight)
     assert layer.bias is not None
     torch.testing.assert_close(layer.bias, expected_bias)
+
+
+def _assert_input_gradients_match_dense_qkv() -> None:
+    torch.manual_seed(1003)
+    hidden_size = 8
+    num_heads = 4
+    dense_qkv = nn.Linear(hidden_size, 3 * hidden_size, bias=True)
+    layer = DistributedQKVParallelLinear(hidden_size=hidden_size, num_heads=num_heads, bias=True)
+    layer.copy_from_dense_(dense_qkv)
+
+    dense_x = torch.randn(2, 3, hidden_size, requires_grad=True)
+    distributed_x = dense_x.detach().clone().requires_grad_()
+
+    dense_loss = dense_qkv(dense_x).square().sum()
+    distributed_loss = layer(distributed_x).square().sum()
+    dense_loss.backward()
+    distributed_loss.backward()
+
+    assert dense_x.grad is not None
+    assert distributed_x.grad is not None
+    torch.testing.assert_close(distributed_x.grad, dense_x.grad, atol=1e-6, rtol=1e-6)
+
+    q_start, q_end, k_start, k_end, v_start, v_end = _qkv_ranges(layer)
+    assert layer.weight.grad is not None
+    assert layer.bias is not None
+    assert layer.bias.grad is not None
+    assert dense_qkv.weight.grad is not None
+    assert dense_qkv.bias is not None
+    assert dense_qkv.bias.grad is not None
+    expected_weight_grad = torch.cat(
+        [
+            dense_qkv.weight.grad[q_start:q_end],
+            dense_qkv.weight.grad[k_start:k_end],
+            dense_qkv.weight.grad[v_start:v_end],
+        ],
+        dim=0,
+    )
+    expected_bias_grad = torch.cat(
+        [
+            dense_qkv.bias.grad[q_start:q_end],
+            dense_qkv.bias.grad[k_start:k_end],
+            dense_qkv.bias.grad[v_start:v_end],
+        ],
+        dim=0,
+    )
+    torch.testing.assert_close(layer.weight.grad, expected_weight_grad, atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(layer.bias.grad, expected_bias_grad, atol=1e-6, rtol=1e-6)
 
 
 def _assert_invalid_num_heads_divisibility_raises() -> None:

@@ -122,7 +122,12 @@ class DistributedQKVParallelLinear(nn.Module):
                 f"got {x.shape[-1]}"
             )
         self.collectives.validate_tensor_device(x, "DistributedQKVParallelLinear")
-        return F.linear(x, self.weight, self.bias)
+        return _DistributedQKVParallelLinearFunction.apply(
+            x,
+            self.weight,
+            self.bias,
+            self.collectives.group,
+        )
 
     def extra_repr(self) -> str:
         return (
@@ -130,3 +135,40 @@ class DistributedQKVParallelLinear(nn.Module):
             f"local_heads={self.local_heads}, head_dim={self.head_dim}, "
             f"rank={self.rank}, world_size={self.world_size}, bias={self.bias is not None}"
         )
+
+
+class _DistributedQKVParallelLinearFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor | None,
+        group: object | None,
+    ) -> torch.Tensor:
+        local_output = F.linear(x, weight, bias)
+        ctx.save_for_backward(x, weight)
+        ctx.has_bias = bias is not None
+        ctx.group = group
+        return local_output
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        import torch.distributed as dist
+
+        x, weight = ctx.saved_tensors
+        grad_local_output = grad_output.contiguous()
+        grad_input = F.linear(grad_local_output, weight.t())
+        dist.all_reduce(grad_input, op=dist.ReduceOp.SUM, group=ctx.group)
+
+        x_2d = x.reshape(-1, x.shape[-1])
+        grad_output_2d = grad_local_output.reshape(-1, grad_local_output.shape[-1])
+        grad_weight = grad_output_2d.t().matmul(x_2d)
+        grad_bias = _sum_bias_gradient(grad_local_output) if ctx.has_bias else None
+        return grad_input, grad_weight, grad_bias, None
+
+
+def _sum_bias_gradient(grad_output: torch.Tensor) -> torch.Tensor:
+    if grad_output.ndim == 1:
+        return grad_output
+    return grad_output.sum(dim=tuple(range(grad_output.ndim - 1)))
