@@ -1,5 +1,6 @@
 import os
 import socket
+import warnings
 
 import pytest
 import torch
@@ -173,6 +174,14 @@ def _distributed_worker(rank: int, world_size: int, port: int) -> None:
         bad_dtype = torch.ones(2, 2) if rank == 0 else torch.ones(2, 2, dtype=torch.float64)
         with pytest.raises(ValueError, match="matching tensor dtypes"):
             distributed_all_reduce_sum(bad_dtype)
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", message=".*c10d::allreduce_.*", category=UserWarning)
+            autograd_input = torch.full((2, 3), float(rank + 1), requires_grad=True)
+            autograd_output = distributed_all_reduce_sum(autograd_input)
+            autograd_output.square().sum().backward()
+        assert autograd_input.grad is not None
+        assert torch.equal(autograd_input.grad, torch.full((2, 3), 6.0))
     finally:
         if dist.is_available() and dist.is_initialized():
             dist.destroy_process_group()

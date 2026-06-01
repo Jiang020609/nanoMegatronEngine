@@ -375,7 +375,9 @@ or speedup claims.
   small loss-backward and one-step optimizer smoke checks only, with explicit
   replicated-gradient synchronization before the local optimizer step. It also
   smoke-tests activation checkpointing through the distributed GPT prototype.
-  This is not a dense-equivalent distributed training claim.
+  The row-parallel forward all-reduce path uses an autograd-safe
+  forward-all-reduce/backward-identity mapping for this prototype. This is not
+  a dense-equivalent distributed training claim.
 - `train_distributed_gpt_smoke.py --spawn 2` runs a tiny CPU/Gloo optimizer-loop
   smoke test over the isolated distributed GPT prototype. It is intentionally
   separate from `GPTModel` and `Trainer`, and it does not claim convergence,

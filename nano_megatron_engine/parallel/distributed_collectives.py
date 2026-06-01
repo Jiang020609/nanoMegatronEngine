@@ -111,7 +111,12 @@ def validate_rank_local_tensor_device(
 
 
 def distributed_all_reduce_sum(tensor: torch.Tensor, group: object | None = None) -> torch.Tensor:
-    """All-reduce a tensor by summing across ranks and returning a new tensor."""
+    """All-reduce a tensor by summing across ranks and returning a new tensor.
+
+    When autograd is active, backward is the identity. This matches the
+    Megatron-style row-parallel output mapping where forward produces a
+    replicated summed tensor and each rank consumes the same output gradient.
+    """
 
     _validate_rank_local_tensor(tensor, "distributed_all_reduce_sum", group=group)
     dist = _require_initialized()
@@ -124,9 +129,9 @@ def distributed_all_reduce_sum(tensor: torch.Tensor, group: object | None = None
         dim=None,
         op_name="distributed_all_reduce_sum",
     )
-    output = tensor.clone()
-    dist.all_reduce(output, op=dist.ReduceOp.SUM, group=group)
-    return output
+    if torch.is_grad_enabled() and tensor.requires_grad:
+        return _AllReduceSumForwardIdentityBackward.apply(tensor, group)
+    return _all_reduce_sum_impl(tensor, group=group)
 
 
 def distributed_all_gather(tensor: torch.Tensor, dim: int = -1, group: object | None = None) -> torch.Tensor:
@@ -202,6 +207,24 @@ def _require_initialized():
             "call init_distributed_from_env first"
         )
     return dist
+
+
+def _all_reduce_sum_impl(tensor: torch.Tensor, group: object | None = None) -> torch.Tensor:
+    dist = _require_initialized()
+    output = tensor.clone()
+    dist.all_reduce(output, op=dist.ReduceOp.SUM, group=group)
+    return output
+
+
+class _AllReduceSumForwardIdentityBackward(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, tensor: torch.Tensor, group: object | None) -> torch.Tensor:
+        ctx.group = group
+        return _all_reduce_sum_impl(tensor, group=group)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None]:
+        return grad_output, None
 
 
 def _validate_rank_local_tensor(tensor: torch.Tensor, op_name: str, group: object | None = None) -> None:
