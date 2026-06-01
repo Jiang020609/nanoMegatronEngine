@@ -78,6 +78,7 @@ python examples/compare_distributed_mlp.py --spawn 2
 python examples/compare_distributed_attention.py --spawn 2
 python examples/compare_distributed_transformer_block.py --spawn 2
 python examples/compare_distributed_gpt_forward.py --spawn 2
+python examples/train_distributed_gpt_smoke.py --spawn 2
 ```
 
 ## v0.2 Fake Tensor Parallelism
@@ -371,6 +372,11 @@ or speedup claims.
   parameter counts, vocab ranges, and representative shard shapes. Training and
   optimizer steps are not wired into the main GPT path yet. The demo includes
   small loss-backward and one-step optimizer smoke checks only, with explicit
-  replicated-gradient synchronization before the local optimizer step. This is
-  not a dense-equivalent distributed training claim.
+  replicated-gradient synchronization before the local optimizer step. It also
+  smoke-tests activation checkpointing through the distributed GPT prototype.
+  This is not a dense-equivalent distributed training claim.
+- `train_distributed_gpt_smoke.py --spawn 2` runs a tiny CPU/Gloo optimizer-loop
+  smoke test over the isolated distributed GPT prototype. It is intentionally
+  separate from `GPTModel` and `Trainer`, and it does not claim convergence,
+  speedup, or full Megatron-style training semantics.
 - Optionally add a simple pipeline schedule visualization.

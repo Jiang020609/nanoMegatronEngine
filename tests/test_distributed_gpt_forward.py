@@ -48,6 +48,7 @@ def _distributed_gpt_worker(rank: int, world_size: int, port: int) -> None:
         _assert_dense_gpt_logits_and_loss_match_distributed(world_size)
         _assert_distributed_gpt_local_shard_summary(world_size)
         _assert_replicated_gradient_sync_averages_only_replicated_parameters(world_size)
+        _assert_distributed_gpt_activation_checkpointing_smoke(world_size)
         _assert_distributed_gpt_loss_backward_smoke(world_size)
         _assert_distributed_gpt_optimizer_step_smoke(world_size)
         _assert_tensor_parallel_size_mismatch_raises()
@@ -102,6 +103,7 @@ def _assert_distributed_gpt_local_shard_summary(world_size: int) -> None:
     assert summary["rank"] == rank
     assert summary["world_size"] == world_size
     assert summary["local_parameter_count"] == distributed.num_parameters()
+    assert summary["activation_checkpointing"] is False
     assert summary["replicated_parameter_names"] == distributed.replicated_parameter_names()
     assert "position_embedding.weight" in distributed.replicated_parameter_names()
     assert "blocks.0.attn.proj.bias" in distributed.replicated_parameter_names()
@@ -160,6 +162,42 @@ def _assert_replicated_gradient_sync_averages_only_replicated_parameters(world_s
         assert parameter.grad is not None
         expected_value = expected_replicated_value if name in replicated_names else rank_value
         torch.testing.assert_close(parameter.grad, torch.full_like(parameter.grad, expected_value))
+
+
+def _assert_distributed_gpt_activation_checkpointing_smoke(world_size: int) -> None:
+    torch.manual_seed(1304)
+    dense_config = _dense_config(use_activation_checkpointing=True)
+    distributed_config = _distributed_config(world_size=world_size, use_activation_checkpointing=True)
+    dense = GPTModel(dense_config)
+    distributed = DistributedGPTModel(distributed_config)
+    distributed.copy_from_dense_(dense)
+    dense.train()
+    distributed.train()
+
+    input_ids = torch.tensor(
+        [
+            [0, 1, 16, 31, 4],
+            [17, 2, 30, 8, 15],
+        ]
+    )
+    targets = torch.tensor(
+        [
+            [1, 16, 31, 4, 5],
+            [2, 30, 8, 15, 0],
+        ]
+    )
+
+    dense_logits, dense_loss = dense(input_ids, targets)
+    distributed_logits, distributed_loss = distributed(input_ids, targets)
+    assert dense_loss is not None
+    assert distributed_loss is not None
+    torch.testing.assert_close(distributed_logits, dense_logits, atol=1e-6, rtol=1e-5)
+    torch.testing.assert_close(distributed_loss, dense_loss, atol=1e-6, rtol=1e-5)
+
+    distributed_loss.backward()
+    _assert_all_trainable_grads_are_finite(distributed)
+    synchronized = distributed.synchronize_replicated_gradients_()
+    assert set(synchronized) == set(distributed.replicated_parameter_names())
 
 
 def _assert_distributed_gpt_loss_backward_smoke(world_size: int) -> None:
@@ -262,7 +300,7 @@ def _assert_invalid_sequence_length_raises(world_size: int) -> None:
         distributed(torch.zeros(2, 9, dtype=torch.long))
 
 
-def _dense_config() -> GPTConfig:
+def _dense_config(use_activation_checkpointing: bool = False) -> GPTConfig:
     return GPTConfig(
         vocab_size=32,
         block_size=8,
@@ -270,11 +308,12 @@ def _dense_config() -> GPTConfig:
         n_head=4,
         n_embd=8,
         dropout=0.0,
+        use_activation_checkpointing=use_activation_checkpointing,
         tensor_parallel_size=1,
     )
 
 
-def _distributed_config(world_size: int = 2) -> GPTConfig:
+def _distributed_config(world_size: int = 2, use_activation_checkpointing: bool = False) -> GPTConfig:
     return GPTConfig(
         vocab_size=32,
         block_size=8,
@@ -282,6 +321,7 @@ def _distributed_config(world_size: int = 2) -> GPTConfig:
         n_head=4,
         n_embd=8,
         dropout=0.0,
+        use_activation_checkpointing=use_activation_checkpointing,
         tensor_parallel_size=world_size,
     )
 

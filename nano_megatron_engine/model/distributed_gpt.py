@@ -8,9 +8,16 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from nano_megatron_engine.memory.activation_checkpoint import checkpoint_block
 from nano_megatron_engine.model.config import GPTConfig
 from nano_megatron_engine.model.distributed_transformer_block import DistributedTransformerBlock
-from nano_megatron_engine.parallel import VocabParallelEmbedding, VocabParallelLMHead
+from nano_megatron_engine.parallel import (
+    DistributedColumnParallelLinear,
+    DistributedQKVParallelLinear,
+    DistributedRowParallelLinear,
+    VocabParallelEmbedding,
+    VocabParallelLMHead,
+)
 from nano_megatron_engine.parallel.collective_adapters import DistributedRankLocalCollectives
 
 
@@ -77,6 +84,7 @@ class DistributedGPTModel(nn.Module):
             bias=False,
             collectives=self.collectives,
         )
+        self.apply(self._init_weights)
         self.lm_head.tie_weight_shards(self.token_embedding.weight_shards)
 
     def copy_from_dense_(self, dense_model: nn.Module) -> "DistributedGPTModel":
@@ -139,7 +147,10 @@ class DistributedGPTModel(nn.Module):
         x = self.dropout(x)
 
         for block in self.blocks:
-            x = block(x)
+            if self.config.use_activation_checkpointing and self.training:
+                x = checkpoint_block(block, x)
+            else:
+                x = block(x)
 
         x = self.ln_f(x)
         logits = self.lm_head(x)
@@ -187,6 +198,7 @@ class DistributedGPTModel(nn.Module):
             "rank": self.rank,
             "world_size": self.world_size,
             "local_parameter_count": self.num_parameters(),
+            "activation_checkpointing": self.config.use_activation_checkpointing,
             "replicated_parameter_names": self.replicated_parameter_names(),
             "token_embedding": {
                 "vocab_range": (self.token_embedding.local_vocab_start, self.token_embedding.local_vocab_end),
@@ -245,3 +257,28 @@ class DistributedGPTModel(nn.Module):
                 "fc2_weight_shape": tuple(block.fc2.weight.shape),
             },
         }
+
+    @staticmethod
+    def _init_weights(module: nn.Module) -> None:
+        if isinstance(module, (DistributedColumnParallelLinear, DistributedQKVParallelLinear)):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, DistributedRowParallelLinear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, VocabParallelEmbedding):
+            for weight in module.weight_shards:
+                nn.init.normal_(weight, mean=0.0, std=0.02)
+        elif isinstance(module, VocabParallelLMHead):
+            for weight in module.weight_shards:
+                nn.init.normal_(weight, mean=0.0, std=0.02)
+            if module.bias_shards is not None:
+                for bias in module.bias_shards:
+                    nn.init.zeros_(bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)

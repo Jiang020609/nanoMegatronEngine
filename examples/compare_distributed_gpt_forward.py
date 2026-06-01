@@ -84,6 +84,7 @@ def _run_demo() -> None:
             print(f"  local parameters changed: {result['parameters_changed']}")
             print(f"  local parameters finite after step: {result['parameters_finite_after_step']}")
             print(f"  post-step loss finite: {result['post_step_loss_finite']}")
+            print(f"  activation checkpoint backward smoke: {result['activation_checkpoint_backward_smoke']}")
             print()
             print("Note:")
             print("  This is a CPU/Gloo distributed GPT forward prototype.")
@@ -136,6 +137,7 @@ def _compare_gpt_forward(world_size: int) -> dict[str, object]:
     if distributed_tied_vocab_grad.shape != dense_tied_vocab_grad.shape:
         raise AssertionError("distributed GPT tied vocab gradient shard shape does not match the dense slice shape")
     optimizer_result = _run_optimizer_step_smoke(distributed, input_ids, targets)
+    activation_checkpoint_result = _run_activation_checkpointing_smoke(world_size, input_ids, targets)
 
     return {
         "vocab_size": dense_config.vocab_size,
@@ -154,6 +156,7 @@ def _compare_gpt_forward(world_size: int) -> dict[str, object]:
         "tied_vocab_grad_shape": distributed_tied_vocab_grad.shape,
         "tied_vocab_grad_nonzero": bool(distributed_tied_vocab_grad.abs().sum().item() > 0.0),
         **optimizer_result,
+        **activation_checkpoint_result,
     }
 
 
@@ -177,6 +180,19 @@ def _distributed_config(world_size: int) -> GPTConfig:
         n_head=4,
         n_embd=8,
         dropout=0.0,
+        tensor_parallel_size=world_size,
+    )
+
+
+def _distributed_checkpoint_config(world_size: int) -> GPTConfig:
+    return GPTConfig(
+        vocab_size=32,
+        block_size=8,
+        n_layer=2,
+        n_head=4,
+        n_embd=8,
+        dropout=0.0,
+        use_activation_checkpointing=True,
         tensor_parallel_size=world_size,
     )
 
@@ -275,6 +291,25 @@ def _run_optimizer_step_smoke(
         "parameters_finite_after_step": parameters_finite,
         "post_step_loss_finite": post_step_loss_finite,
     }
+
+
+def _run_activation_checkpointing_smoke(
+    world_size: int,
+    input_ids: torch.Tensor,
+    targets: torch.Tensor,
+) -> dict[str, object]:
+    torch.manual_seed(13102)
+    model = DistributedGPTModel(_distributed_checkpoint_config(world_size))
+    model.train()
+    _, loss = model(input_ids, targets)
+    if loss is None or not torch.isfinite(loss):
+        raise AssertionError("distributed GPT activation checkpoint smoke produced a non-finite loss")
+    loss.backward()
+    _assert_all_trainable_grads_are_finite(model)
+    synchronized = model.synchronize_replicated_gradients_()
+    if not synchronized:
+        raise AssertionError("distributed GPT activation checkpoint smoke did not synchronize replicated gradients")
+    return {"activation_checkpoint_backward_smoke": True}
 
 
 def _has_torchrun_env() -> bool:
