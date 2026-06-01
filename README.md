@@ -387,7 +387,10 @@ or speedup claims.
   comparison over the same isolated distributed GPT prototype. It checks
   forward equivalence against a dense GPT, loss backward, explicit replicated
   gradient synchronization, one local optimizer step, and activation
-  checkpoint backward plumbing. This is for single-node GPU/NCCL validation of
-  the prototype path only; the main `GPTModel` path is not wired to real
-  distributed TP, and there are no multi-node orchestration or speedup claims.
+  checkpoint backward plumbing. Strict validation is enabled by default, so
+  any failed closeness, finiteness, optimizer, or checkpoint smoke check exits
+  nonzero. Use `--preset small` for a slightly wider 4-GPU smoke shape. This is
+  for single-node GPU/NCCL validation of the prototype path only; the main
+  `GPTModel` path is not wired to real distributed TP, and there are no
+  multi-node orchestration or speedup claims.
 - Optionally add a simple pipeline schedule visualization.

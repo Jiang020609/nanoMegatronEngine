@@ -17,22 +17,38 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run a tiny CUDA/NCCL distributed GPT prototype smoke comparison."
     )
-    parser.parse_args()
+    parser.add_argument(
+        "--preset",
+        choices=("tiny", "small"),
+        default="tiny",
+        help="model shape preset; small is still a smoke test but exercises wider tensors",
+    )
+    parser.add_argument("--seed", type=int, default=13101, help="deterministic seed for model initialization")
+    parser.add_argument(
+        "--no-strict",
+        dest="strict",
+        action="store_false",
+        help="print checks without failing on close/finiteness mismatches",
+    )
+    parser.set_defaults(strict=True)
+    args = parser.parse_args()
 
     if not _has_torchrun_env():
         print("CUDA/NCCL distributed GPT smoke demo")
         print("Run with torchrun on a CUDA PyTorch build with NCCL, for example:")
         print("  torchrun --standalone --nproc_per_node=2 examples/compare_distributed_gpt_nccl.py")
         print("  torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py")
+        print("  torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small")
         print("This is an isolated distributed GPT prototype smoke path.")
+        print("Strict validation is enabled by default; use --no-strict to print without failing.")
         print("The main GPTModel path is not wired to real distributed TP.")
         print("No multi-node orchestration or speedup claims.")
         return
 
-    _run_demo()
+    _run_demo(args)
 
 
-def _run_demo() -> None:
+def _run_demo(args: argparse.Namespace) -> None:
     import torch.distributed as dist
 
     if not torch.cuda.is_available():
@@ -53,13 +69,15 @@ def _run_demo() -> None:
         rank = get_rank()
         world_size = get_world_size()
         backend = get_backend()
-        if _dense_config().n_head % world_size != 0 or _dense_config().vocab_size % world_size != 0:
+        dense_config = _dense_config(args.preset)
+        if dense_config.n_head % world_size != 0 or dense_config.vocab_size % world_size != 0:
             raise ValueError(
-                "this tiny CUDA/NCCL demo expects world_size to divide n_head=4 and vocab_size=32; "
-                "try --nproc_per_node=2 or --nproc_per_node=4"
+                "this CUDA/NCCL demo expects world_size to divide "
+                f"n_head={dense_config.n_head} and vocab_size={dense_config.vocab_size}; "
+                "try --nproc_per_node=2 or --nproc_per_node=4 with the default presets"
             )
 
-        result = _compare_gpt_forward(world_size, device)
+        result = _compare_gpt_forward(world_size, device, preset=args.preset, seed=args.seed)
         torch.cuda.synchronize(device)
 
         if rank == 0:
@@ -68,6 +86,9 @@ def _run_demo() -> None:
             print(f"world_size: {world_size}")
             print(f"cuda devices visible: {torch.cuda.device_count()}")
             print(f"rank 0 device: {device}")
+            print(f"preset: {result['preset']}")
+            print(f"seed: {result['seed']}")
+            print(f"strict validation: {args.strict}")
             print(f"vocab_size: {result['vocab_size']}")
             print(f"block_size: {result['block_size']}")
             print(f"n_layer: {result['n_layer']}")
@@ -100,6 +121,9 @@ def _run_demo() -> None:
             print(f"  post-step loss finite: {result['post_step_loss_finite']}")
             print(f"  activation checkpoint backward smoke: {result['activation_checkpoint_backward_smoke']}")
             print()
+            print("Strict checks")
+            print(f"  all strict checks passed: {_strict_checks_pass(result)}")
+            print()
             print("Note:")
             print("  This is a CUDA/NCCL smoke path for the isolated distributed GPT prototype.")
             print("  The backward and optimizer sections check local plumbing only.")
@@ -107,18 +131,26 @@ def _run_demo() -> None:
             print("  Full dense-equivalent distributed GPT training is not claimed yet.")
             print("  Real distributed GPT TP is not wired into the main GPTModel path.")
             print("  No multi-node orchestration or speedup claims.")
+
+        if args.strict:
+            _assert_strict_result(result)
     finally:
         if dist.is_available() and dist.is_initialized():
             dist.destroy_process_group()
 
 
-def _compare_gpt_forward(world_size: int, device: torch.device) -> dict[str, object]:
+def _compare_gpt_forward(
+    world_size: int,
+    device: torch.device,
+    preset: str,
+    seed: int,
+) -> dict[str, object]:
     _make_cuda_math_deterministic_enough()
-    torch.manual_seed(13101)
-    torch.cuda.manual_seed_all(13101)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
-    dense_config = _dense_config()
-    distributed_config = _distributed_config(world_size)
+    dense_config = _dense_config(preset)
+    distributed_config = _distributed_config(world_size, preset)
     dense = GPTModel(dense_config).to(device)
     dense.eval()
     distributed = DistributedGPTModel(distributed_config).to(device)
@@ -126,20 +158,7 @@ def _compare_gpt_forward(world_size: int, device: torch.device) -> dict[str, obj
     distributed.copy_from_dense_(dense)
     shard_summaries = _gather_shard_summaries(distributed.local_shard_summary())
 
-    input_ids = torch.tensor(
-        [
-            [0, 1, 16, 31, 4],
-            [17, 2, 30, 8, 15],
-        ],
-        device=device,
-    )
-    targets = torch.tensor(
-        [
-            [1, 16, 31, 4, 5],
-            [2, 30, 8, 15, 0],
-        ],
-        device=device,
-    )
+    input_ids, targets = _make_synthetic_batch(dense_config, device)
 
     dense_logits, dense_loss = dense(input_ids, targets)
     distributed_logits, distributed_loss = distributed(input_ids, targets)
@@ -159,9 +178,21 @@ def _compare_gpt_forward(world_size: int, device: torch.device) -> dict[str, obj
         raise AssertionError("distributed GPT tied vocab gradient shard shape does not match the dense slice shape")
 
     optimizer_result = _run_optimizer_step_smoke(distributed, input_ids, targets)
-    activation_checkpoint_result = _run_activation_checkpointing_smoke(world_size, input_ids, targets, device)
+    activation_checkpoint_result = _run_activation_checkpointing_smoke(
+        world_size,
+        input_ids,
+        targets,
+        device,
+        preset=preset,
+        seed=seed + 1,
+    )
+
+    logits_close = _outputs_close(dense_logits, distributed_logits)
+    loss_close = _outputs_close(dense_loss, distributed_loss)
 
     return {
+        "preset": preset,
+        "seed": seed,
         "vocab_size": dense_config.vocab_size,
         "block_size": dense_config.block_size,
         "n_layer": dense_config.n_layer,
@@ -171,9 +202,11 @@ def _compare_gpt_forward(world_size: int, device: torch.device) -> dict[str, obj
         "dense_shape": dense_logits.shape,
         "distributed_shape": distributed_logits.shape,
         "logits_error": _max_abs_error(dense_logits, distributed_logits),
-        "logits_close": _outputs_close(dense_logits, distributed_logits),
+        "logits_close": logits_close,
+        "logits_finite": _tensor_is_finite(dense_logits) and _tensor_is_finite(distributed_logits),
         "loss_error": _max_abs_error(dense_loss, distributed_loss),
-        "loss_close": _outputs_close(dense_loss, distributed_loss),
+        "loss_close": loss_close,
+        "loss_finite": _tensor_is_finite(dense_loss) and _tensor_is_finite(distributed_loss),
         "grads_finite": _all_trainable_grads_are_finite(distributed),
         "tied_vocab_grad_shape": distributed_tied_vocab_grad.shape,
         "tied_vocab_grad_nonzero": bool(distributed_tied_vocab_grad.abs().sum().item() > 0.0),
@@ -182,7 +215,19 @@ def _compare_gpt_forward(world_size: int, device: torch.device) -> dict[str, obj
     }
 
 
-def _dense_config() -> GPTConfig:
+def _dense_config(preset: str) -> GPTConfig:
+    if preset == "small":
+        return GPTConfig(
+            vocab_size=128,
+            block_size=16,
+            n_layer=2,
+            n_head=8,
+            n_embd=64,
+            dropout=0.0,
+            tensor_parallel_size=1,
+        )
+    if preset != "tiny":
+        raise ValueError(f"unknown CUDA/NCCL GPT smoke preset {preset!r}")
     return GPTConfig(
         vocab_size=32,
         block_size=8,
@@ -194,25 +239,27 @@ def _dense_config() -> GPTConfig:
     )
 
 
-def _distributed_config(world_size: int) -> GPTConfig:
+def _distributed_config(world_size: int, preset: str) -> GPTConfig:
+    config = _dense_config(preset)
     return GPTConfig(
-        vocab_size=32,
-        block_size=8,
-        n_layer=2,
-        n_head=4,
-        n_embd=8,
+        vocab_size=config.vocab_size,
+        block_size=config.block_size,
+        n_layer=config.n_layer,
+        n_head=config.n_head,
+        n_embd=config.n_embd,
         dropout=0.0,
         tensor_parallel_size=world_size,
     )
 
 
-def _distributed_checkpoint_config(world_size: int) -> GPTConfig:
+def _distributed_checkpoint_config(world_size: int, preset: str) -> GPTConfig:
+    config = _dense_config(preset)
     return GPTConfig(
-        vocab_size=32,
-        block_size=8,
-        n_layer=2,
-        n_head=4,
-        n_embd=8,
+        vocab_size=config.vocab_size,
+        block_size=config.block_size,
+        n_layer=config.n_layer,
+        n_head=config.n_head,
+        n_embd=config.n_embd,
         dropout=0.0,
         use_activation_checkpointing=True,
         tensor_parallel_size=world_size,
@@ -256,10 +303,12 @@ def _run_activation_checkpointing_smoke(
     input_ids: torch.Tensor,
     targets: torch.Tensor,
     device: torch.device,
+    preset: str,
+    seed: int,
 ) -> dict[str, object]:
-    torch.manual_seed(13102)
-    torch.cuda.manual_seed_all(13102)
-    model = DistributedGPTModel(_distributed_checkpoint_config(world_size)).to(device)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    model = DistributedGPTModel(_distributed_checkpoint_config(world_size, preset)).to(device)
     model.train()
     _, loss = model(input_ids, targets)
     if loss is None or not torch.isfinite(loss):
@@ -270,6 +319,14 @@ def _run_activation_checkpointing_smoke(
     if not synchronized:
         raise AssertionError("distributed GPT activation checkpoint smoke did not synchronize replicated gradients")
     return {"activation_checkpoint_backward_smoke": True}
+
+
+def _make_synthetic_batch(config: GPTConfig, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    seq_len = min(5, config.block_size)
+    input_ids = torch.arange(2 * seq_len, dtype=torch.long, device=device).view(2, seq_len)
+    input_ids = (input_ids * 7 + 3) % config.vocab_size
+    targets = (input_ids + 1) % config.vocab_size
+    return input_ids, targets
 
 
 def _gather_shard_summaries(summary: dict[str, object]) -> list[dict[str, object]]:
@@ -302,6 +359,55 @@ def _max_abs_error(expected: torch.Tensor, actual: torch.Tensor) -> float:
 
 def _outputs_close(expected: torch.Tensor, actual: torch.Tensor) -> bool:
     return bool(torch.allclose(expected, actual, atol=1e-5, rtol=1e-5))
+
+
+def _tensor_is_finite(tensor: torch.Tensor) -> bool:
+    return bool(torch.isfinite(tensor).all())
+
+
+def _strict_checks_pass(result: dict[str, object]) -> bool:
+    return all(
+        bool(result[name])
+        for name in (
+            "logits_close",
+            "logits_finite",
+            "loss_close",
+            "loss_finite",
+            "grads_finite",
+            "tied_vocab_grad_nonzero",
+            "optimizer_step_completed",
+            "parameters_changed",
+            "parameters_finite_after_step",
+            "post_step_loss_finite",
+            "activation_checkpoint_backward_smoke",
+        )
+    )
+
+
+def _assert_strict_result(result: dict[str, object]) -> None:
+    failed = [
+        name
+        for name in (
+            "logits_close",
+            "logits_finite",
+            "loss_close",
+            "loss_finite",
+            "grads_finite",
+            "tied_vocab_grad_nonzero",
+            "optimizer_step_completed",
+            "parameters_changed",
+            "parameters_finite_after_step",
+            "post_step_loss_finite",
+            "activation_checkpoint_backward_smoke",
+        )
+        if not bool(result[name])
+    ]
+    if failed:
+        raise AssertionError(
+            "strict CUDA/NCCL distributed GPT smoke failed checks: "
+            + ", ".join(failed)
+            + f"; logits_error={result['logits_error']}, loss_error={result['loss_error']}"
+        )
 
 
 def _assert_all_trainable_grads_are_finite(model: torch.nn.Module) -> None:
