@@ -31,6 +31,7 @@ parallel behavior remains separate and unchanged.
 | CPU/Gloo MLP composition | `python examples/compare_distributed_mlp.py --spawn 2` | Dense MLP vs distributed column-local GELU plus row-parallel MLP, including input gradients | Passing locally |
 | CUDA/NCCL GPT smoke | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small` | Dense vs distributed GPT forward/loss, backward smoke, replicated gradient sync, local SGD step smoke, activation checkpoint backward smoke | Passed on 4-GPU A800 |
 | CUDA/NCCL GPT gradient and optimizer equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py --preset small` | Dense gradients vs local distributed gradient shards, replicated gradients after explicit sync, and one SGD-updated dense parameter slice vs local distributed shard | Passed on 4-GPU A800: 236/236 checks, max abs error around `1.8e-7` |
+| CUDA/NCCL GPT multi-step training equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5` | A short deterministic SGD loop comparing logits, loss, gradient shards, replicated gradients, and updated parameter shards after every step | Ready for 4-GPU A800 validation |
 
 ## Current Guarantees
 
@@ -47,6 +48,21 @@ CUDA/NCCL path checks:
   synchronization
 - one SGD step updates local distributed shards to match the corresponding
   dense parameter slices
+
+## Next Strict A800 Check
+
+The next stricter validation target is a multi-step SGD equivalence run:
+
+```bash
+torchrun --standalone --nproc_per_node=4 \
+  examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5
+```
+
+This keeps the same dense and distributed GPT instances alive across multiple
+deterministic steps. Each step checks logits, loss, sharded gradients,
+replicated gradients after explicit synchronization, and updated parameter
+shards. The status should only be changed from ready to passed after this
+strict command completes on the A800 environment.
 
 ## Important Non-Goals
 
@@ -92,6 +108,13 @@ Run the CUDA/NCCL strict gradient and optimizer equivalence check:
 ```bash
 torchrun --standalone --nproc_per_node=4 \
   examples/compare_distributed_gpt_gradients_nccl.py --preset small
+```
+
+Run the CUDA/NCCL multi-step training equivalence check:
+
+```bash
+torchrun --standalone --nproc_per_node=4 \
+  examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5
 ```
 
 The CUDA/NCCL commands are single-node prototype validations only. They should

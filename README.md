@@ -81,6 +81,7 @@ python examples/compare_distributed_gpt_forward.py --spawn 2
 python examples/train_distributed_gpt_smoke.py --spawn 2
 torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small
 torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py --preset small
+torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5
 ```
 
 For the current distributed tensor-parallel prototype validation matrix and
@@ -409,4 +410,11 @@ summarized in [`docs/distributed_tp_status.md`](docs/distributed_tp_status.md).
   replicated-gradient synchronization. It then runs one SGD step and compares
   the updated distributed shards with the updated dense parameter slices. This
   is diagnostic prototype validation, not a full distributed training claim.
+- `torchrun --standalone --nproc_per_node=4
+  examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5`
+  runs a stricter multi-step CUDA/NCCL training equivalence check. It keeps the
+  same dense and distributed GPT instances alive across deterministic SGD steps
+  and compares logits, loss, gradient shards, replicated gradients, and updated
+  parameter shards after every step. This is intended as single-node A800/NCCL
+  prototype validation and is not a full distributed training engine claim.
 - Optionally add a simple pipeline schedule visualization.
