@@ -31,7 +31,7 @@ parallel behavior remains separate and unchanged.
 | CPU/Gloo MLP composition | `python examples/compare_distributed_mlp.py --spawn 2` | Dense MLP vs distributed column-local GELU plus row-parallel MLP, including input gradients | Passing locally |
 | CUDA/NCCL GPT smoke | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small` | Dense vs distributed GPT forward/loss, backward smoke, replicated gradient sync, local SGD step smoke, activation checkpoint backward smoke | Passed on 4-GPU A800 |
 | CUDA/NCCL GPT gradient and optimizer equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py --preset small` | Dense gradients vs local distributed gradient shards, replicated gradients after explicit sync, and one SGD-updated dense parameter slice vs local distributed shard | Passed on 4-GPU A800: 236/236 checks, max abs error around `1.8e-7` |
-| CUDA/NCCL GPT multi-step training equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5` | A short deterministic SGD loop comparing logits, loss, gradient shards, replicated gradients, and updated parameter shards after every step | Ready for 4-GPU A800 validation |
+| CUDA/NCCL GPT multi-step training equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5` | A short deterministic SGD loop comparing logits, loss, gradient shards, replicated gradients, and updated parameter shards after every step | Passed on 4-GPU A800: 1240/1240 checks, max abs error around `4.8e-7` |
 
 ## Current Guarantees
 
@@ -48,21 +48,23 @@ CUDA/NCCL path checks:
   synchronization
 - one SGD step updates local distributed shards to match the corresponding
   dense parameter slices
+- a 5-step deterministic SGD loop keeps logits, losses, gradient shards,
+  replicated gradients, and updated parameter shards aligned with dense slices
 
-## Next Strict A800 Check
+## Latest Strict A800 Check
 
-The next stricter validation target is a multi-step SGD equivalence run:
+The latest stricter validation target is a multi-step SGD equivalence run:
 
 ```bash
 torchrun --standalone --nproc_per_node=4 \
   examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5
 ```
 
-This keeps the same dense and distributed GPT instances alive across multiple
-deterministic steps. Each step checks logits, loss, sharded gradients,
-replicated gradients after explicit synchronization, and updated parameter
-shards. The status should only be changed from ready to passed after this
-strict command completes on the A800 environment.
+This completed on a 4-GPU A800 environment with 1240/1240 checks passing and
+maximum absolute error around `4.8e-7`. It keeps the same dense and distributed
+GPT instances alive across multiple deterministic steps. Each step checks
+logits, loss, sharded gradients, replicated gradients after explicit
+synchronization, and updated parameter shards.
 
 ## Important Non-Goals
 
