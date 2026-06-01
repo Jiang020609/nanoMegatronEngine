@@ -43,6 +43,7 @@ def _distributed_column_worker(rank: int, world_size: int, port: int) -> None:
         _assert_bias_false_matches_dense()
         _assert_copy_from_dense_slices_rank_local_parameters()
         _assert_gathered_input_gradients_match_dense()
+        _assert_local_output_input_gradients_match_dense()
         _assert_invalid_out_features_raise()
     finally:
         if dist.is_available() and dist.is_initialized():
@@ -105,6 +106,28 @@ def _assert_gathered_input_gradients_match_dense() -> None:
 
     dense_loss = dense(dense_x).square().mean()
     distributed_loss = layer(distributed_x).square().mean()
+    dense_loss.backward()
+    distributed_loss.backward()
+
+    torch.testing.assert_close(distributed_x.grad, dense_x.grad, atol=1e-6, rtol=1e-6)
+    start, end = layer.local_out_start, layer.local_out_end
+    torch.testing.assert_close(layer.weight.grad, dense.weight.grad[start:end], atol=1e-6, rtol=1e-6)
+    assert layer.bias is not None
+    assert dense.bias is not None
+    torch.testing.assert_close(layer.bias.grad, dense.bias.grad[start:end], atol=1e-6, rtol=1e-6)
+
+
+def _assert_local_output_input_gradients_match_dense() -> None:
+    torch.manual_seed(806)
+    dense = nn.Linear(4, 8, bias=True)
+    layer = DistributedColumnParallelLinear(4, 8, bias=True, gather_output=False)
+    layer.copy_from_dense_(dense)
+
+    dense_x = torch.randn(3, 5, 4, requires_grad=True)
+    distributed_x = dense_x.detach().clone().requires_grad_()
+
+    dense_loss = dense(dense_x).square().sum()
+    distributed_loss = layer(distributed_x).square().sum()
     dense_loss.backward()
     distributed_loss.backward()
 

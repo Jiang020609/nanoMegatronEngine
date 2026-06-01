@@ -7,7 +7,6 @@ from torch import nn
 
 from nano_megatron_engine.parallel import (
     DistributedColumnParallelLinear,
-    DistributedRankLocalCollectives,
     DistributedRowParallelLinear,
     init_distributed_from_env,
     is_distributed_available,
@@ -85,8 +84,7 @@ def _assert_composed_mlp_matches_dense(world_size: int) -> None:
 
     assert dense_x.grad is not None
     assert dist_x.grad is not None
-    full_dist_x_grad = DistributedRankLocalCollectives().all_reduce_sum(dist_x.grad)
-    torch.testing.assert_close(full_dist_x_grad, dense_x.grad, atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(dist_x.grad, dense_x.grad, atol=1e-6, rtol=1e-6)
 
     start, end = dist_fc1.local_out_start, dist_fc1.local_out_end
     torch.testing.assert_close(dist_fc1.weight.grad, dense_fc1.weight.grad[start:end], atol=1e-6, rtol=1e-6)

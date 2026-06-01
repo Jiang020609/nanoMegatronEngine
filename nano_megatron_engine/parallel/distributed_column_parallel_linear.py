@@ -143,8 +143,7 @@ class _DistributedColumnParallelLinearFunction(torch.autograd.Function):
             grad_local_output = grad_output.contiguous()
 
         grad_input = F.linear(grad_local_output, weight.t())
-        if ctx.gather_output:
-            dist.all_reduce(grad_input, op=dist.ReduceOp.SUM, group=ctx.group)
+        dist.all_reduce(grad_input, op=dist.ReduceOp.SUM, group=ctx.group)
 
         x_2d = x.reshape(-1, x.shape[-1])
         grad_output_2d = grad_local_output.reshape(-1, grad_local_output.shape[-1])

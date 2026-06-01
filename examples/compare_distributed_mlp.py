@@ -11,7 +11,6 @@ from torch import nn
 
 from nano_megatron_engine.parallel import (
     DistributedColumnParallelLinear,
-    DistributedRankLocalCollectives,
     DistributedRowParallelLinear,
     get_rank,
     get_world_size,
@@ -129,15 +128,14 @@ def _compare_forward_and_gradients(hidden_size: int, intermediate_size: int, wor
 
     assert dense_x.grad is not None
     assert dist_x.grad is not None
-    full_dist_x_grad = DistributedRankLocalCollectives().all_reduce_sum(dist_x.grad)
 
     return {
         "dense_shape": dense_y.shape,
         "distributed_shape": dist_y.shape,
         "forward_error": _max_abs_error(dense_y, dist_y),
         "forward_close": _outputs_close(dense_y, dist_y),
-        "grad_error": _max_abs_error(dense_x.grad, full_dist_x_grad),
-        "grad_close": _outputs_close(dense_x.grad, full_dist_x_grad),
+        "grad_error": _max_abs_error(dense_x.grad, dist_x.grad),
+        "grad_close": _outputs_close(dense_x.grad, dist_x.grad),
     }
 
 
