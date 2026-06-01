@@ -80,6 +80,7 @@ def _run_demo() -> None:
             print()
             print("Optimizer step smoke")
             print(f"  one SGD step completed: {result['optimizer_step_completed']}")
+            print(f"  replicated gradients synchronized: {result['replicated_gradients_synchronized']}")
             print(f"  local parameters changed: {result['parameters_changed']}")
             print(f"  local parameters finite after step: {result['parameters_finite_after_step']}")
             print(f"  post-step loss finite: {result['post_step_loss_finite']}")
@@ -87,6 +88,7 @@ def _run_demo() -> None:
             print("Note:")
             print("  This is a CPU/Gloo distributed GPT forward prototype.")
             print("  The backward and optimizer sections check local plumbing only.")
+            print("  Replicated gradient synchronization is explicit and prototype-local.")
             print("  Full dense-equivalent distributed GPT training is not claimed yet.")
             print("  Real distributed GPT TP is not wired into the main GPTModel path.")
             print("  No NCCL/GPU/multi-node/speedup claims.")
@@ -250,6 +252,9 @@ def _run_optimizer_step_smoke(
 ) -> dict[str, object]:
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
     before = [parameter.detach().clone() for parameter in model.parameters() if parameter.requires_grad]
+    synchronized = model.synchronize_replicated_gradients_()
+    if not synchronized:
+        raise AssertionError("distributed GPT optimizer smoke did not synchronize replicated gradients")
     optimizer.step()
     after = [parameter.detach() for parameter in model.parameters() if parameter.requires_grad]
     parameters_changed = bool(any(not torch.equal(old, new) for old, new in zip(before, after)))
@@ -265,6 +270,7 @@ def _run_optimizer_step_smoke(
         raise AssertionError("distributed GPT optimizer smoke step produced a non-finite post-step loss")
     return {
         "optimizer_step_completed": True,
+        "replicated_gradients_synchronized": len(synchronized),
         "parameters_changed": parameters_changed,
         "parameters_finite_after_step": parameters_finite,
         "post_step_loss_finite": post_step_loss_finite,

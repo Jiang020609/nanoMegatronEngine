@@ -370,6 +370,7 @@ or speedup claims.
   transformer blocks, and a distributed LM head. The demo reports local rank
   parameter counts, vocab ranges, and representative shard shapes. Training and
   optimizer steps are not wired into the main GPT path yet. The demo includes
-  small loss-backward and one-step optimizer smoke checks only, not a
-  dense-equivalent distributed training claim.
+  small loss-backward and one-step optimizer smoke checks only, with explicit
+  replicated-gradient synchronization before the local optimizer step. This is
+  not a dense-equivalent distributed training claim.
 - Optionally add a simple pipeline schedule visualization.

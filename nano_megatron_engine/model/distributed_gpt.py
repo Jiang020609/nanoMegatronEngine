@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -154,6 +156,30 @@ class DistributedGPTModel(nn.Module):
 
         return sum(parameter.numel() for parameter in self.parameters() if parameter.requires_grad)
 
+    def replicated_parameter_names(self) -> tuple[str, ...]:
+        """Return parameter names that are replicated on every distributed rank."""
+
+        return tuple(name for name, _ in self._iter_replicated_parameters())
+
+    def synchronize_replicated_gradients_(self) -> tuple[str, ...]:
+        """Average gradients for parameters replicated on every rank.
+
+        Tensor-parallel shards remain rank-local and are intentionally not
+        synchronized here. This helper is for explicit CPU/Gloo prototype
+        smoke tests before a local optimizer step; it is not a full distributed
+        training engine.
+        """
+
+        synchronized = []
+        for name, parameter in self._iter_replicated_parameters():
+            if parameter.grad is None:
+                continue
+            reduced_grad = self.collectives.all_reduce_sum(parameter.grad)
+            reduced_grad.div_(self.world_size)
+            parameter.grad.copy_(reduced_grad)
+            synchronized.append(name)
+        return tuple(synchronized)
+
     def local_shard_summary(self) -> dict[str, object]:
         """Return serializable metadata for this rank's local GPT shards."""
 
@@ -161,6 +187,7 @@ class DistributedGPTModel(nn.Module):
             "rank": self.rank,
             "world_size": self.world_size,
             "local_parameter_count": self.num_parameters(),
+            "replicated_parameter_names": self.replicated_parameter_names(),
             "token_embedding": {
                 "vocab_range": (self.token_embedding.local_vocab_start, self.token_embedding.local_vocab_end),
                 "weight_shape": tuple(self.token_embedding.weight_shards[0].shape),
@@ -180,6 +207,20 @@ class DistributedGPTModel(nn.Module):
                 "tied_to_token_embedding": self.lm_head.weight_shards[0] is self.token_embedding.weight_shards[0],
             },
         }
+
+    def _iter_replicated_parameters(self) -> Iterator[tuple[str, nn.Parameter]]:
+        yield "position_embedding.weight", self.position_embedding.weight
+        for index, block in enumerate(self.blocks):
+            yield f"blocks.{index}.ln_1.weight", block.ln_1.weight
+            yield f"blocks.{index}.ln_1.bias", block.ln_1.bias
+            yield f"blocks.{index}.ln_2.weight", block.ln_2.weight
+            yield f"blocks.{index}.ln_2.bias", block.ln_2.bias
+            if block.attn.proj.bias is not None:
+                yield f"blocks.{index}.attn.proj.bias", block.attn.proj.bias
+            if block.fc2.bias is not None:
+                yield f"blocks.{index}.fc2.bias", block.fc2.bias
+        yield "ln_f.weight", self.ln_f.weight
+        yield "ln_f.bias", self.ln_f.bias
 
     def extra_repr(self) -> str:
         return (

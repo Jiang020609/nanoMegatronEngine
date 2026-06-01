@@ -47,6 +47,7 @@ def _distributed_gpt_worker(rank: int, world_size: int, port: int) -> None:
         init_distributed_from_env("gloo")
         _assert_dense_gpt_logits_and_loss_match_distributed(world_size)
         _assert_distributed_gpt_local_shard_summary(world_size)
+        _assert_replicated_gradient_sync_averages_only_replicated_parameters(world_size)
         _assert_distributed_gpt_loss_backward_smoke(world_size)
         _assert_distributed_gpt_optimizer_step_smoke(world_size)
         _assert_tensor_parallel_size_mismatch_raises()
@@ -101,6 +102,11 @@ def _assert_distributed_gpt_local_shard_summary(world_size: int) -> None:
     assert summary["rank"] == rank
     assert summary["world_size"] == world_size
     assert summary["local_parameter_count"] == distributed.num_parameters()
+    assert summary["replicated_parameter_names"] == distributed.replicated_parameter_names()
+    assert "position_embedding.weight" in distributed.replicated_parameter_names()
+    assert "blocks.0.attn.proj.bias" in distributed.replicated_parameter_names()
+    assert "blocks.0.fc2.bias" in distributed.replicated_parameter_names()
+    assert "token_embedding.weight_shards.0" not in distributed.replicated_parameter_names()
     assert summary["token_embedding"] == {
         "vocab_range": (start, end),
         "weight_shape": (local_vocab_size, distributed.config.n_embd),
@@ -132,6 +138,28 @@ def _assert_distributed_gpt_local_shard_summary(world_size: int) -> None:
         distributed.config.n_embd,
         distributed.config.mlp_hidden_size // world_size,
     )
+
+
+def _assert_replicated_gradient_sync_averages_only_replicated_parameters(world_size: int) -> None:
+    distributed = DistributedGPTModel(_distributed_config(world_size=world_size))
+    rank = distributed.collectives.get_rank()
+    rank_value = float(rank + 1)
+    expected_replicated_value = float(sum(range(1, world_size + 1)) / world_size)
+    replicated_names = set(distributed.replicated_parameter_names())
+
+    for _, parameter in distributed.named_parameters():
+        if parameter.requires_grad:
+            parameter.grad = torch.full_like(parameter, rank_value)
+
+    synchronized = distributed.synchronize_replicated_gradients_()
+    assert set(synchronized) == replicated_names
+
+    for name, parameter in distributed.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        assert parameter.grad is not None
+        expected_value = expected_replicated_value if name in replicated_names else rank_value
+        torch.testing.assert_close(parameter.grad, torch.full_like(parameter.grad, expected_value))
 
 
 def _assert_distributed_gpt_loss_backward_smoke(world_size: int) -> None:
@@ -195,6 +223,8 @@ def _assert_distributed_gpt_optimizer_step_smoke(world_size: int) -> None:
     assert torch.isfinite(loss)
     loss.backward()
     _assert_all_trainable_grads_are_finite(distributed)
+    synchronized = distributed.synchronize_replicated_gradients_()
+    assert set(synchronized) == set(distributed.replicated_parameter_names())
     optimizer.step()
 
     after = [parameter.detach() for parameter in distributed.parameters() if parameter.requires_grad]
