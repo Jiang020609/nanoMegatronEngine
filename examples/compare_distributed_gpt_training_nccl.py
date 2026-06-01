@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 
 import torch
 
@@ -19,6 +20,7 @@ from compare_distributed_gpt_gradients_nccl import (
     _gather_checks,
     _has_torchrun_env,
     _local_rank,
+    _local_qkv_slice,
     _make_boolean_check,
     _make_cuda_math_deterministic_enough,
     _make_tensor_check,
@@ -32,8 +34,8 @@ from nano_megatron_engine.parallel import get_backend, get_rank, get_world_size,
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Compare a short dense GPT training loop against CUDA/NCCL "
-            "distributed GPT local parameter shards."
+            "Compare a short dense GPT training loop and optimizer state against "
+            "CUDA/NCCL distributed GPT local parameter shards."
         )
     )
     parser.add_argument(
@@ -44,7 +46,23 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=13301, help="deterministic seed for model initialization")
     parser.add_argument("--steps", type=int, default=5, help="number of deterministic training steps to compare")
-    parser.add_argument("--lr", type=float, default=1e-3, help="SGD learning rate for the update checks")
+    parser.add_argument(
+        "--optimizer",
+        choices=("sgd", "adamw"),
+        default="sgd",
+        help="optimizer to compare; AdamW also checks exp_avg and exp_avg_sq state shards",
+    )
+    parser.add_argument("--lr", type=float, default=1e-3, help="learning rate for the update checks")
+    parser.add_argument("--weight-decay", type=float, default=0.0, help="weight decay for the selected optimizer")
+    parser.add_argument(
+        "--betas",
+        type=float,
+        nargs=2,
+        default=(0.9, 0.95),
+        metavar=("BETA1", "BETA2"),
+        help="AdamW beta coefficients",
+    )
+    parser.add_argument("--eps", type=float, default=1e-8, help="AdamW epsilon")
     parser.add_argument("--max-report", type=int, default=24, help="maximum failed/largest-error checks to print")
     parser.add_argument(
         "--no-strict",
@@ -62,8 +80,13 @@ def main() -> None:
             "  torchrun --standalone --nproc_per_node=4 "
             "examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5"
         )
+        print(
+            "  torchrun --standalone --nproc_per_node=4 "
+            "examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 "
+            "--optimizer adamw --weight-decay 0.01"
+        )
         print("Strict validation is enabled by default; use --no-strict to print without failing.")
-        print("This compares a short SGD loop against dense GPT slices after every step.")
+        print("This compares a short optimizer loop against dense GPT slices after every step.")
         print("The main GPTModel path is not wired to real distributed TP.")
         print("No multi-node orchestration or speedup claims.")
         return
@@ -107,7 +130,11 @@ def _run_demo(args: argparse.Namespace) -> None:
             preset=args.preset,
             seed=args.seed,
             steps=args.steps,
+            optimizer_name=args.optimizer,
             learning_rate=args.lr,
+            weight_decay=args.weight_decay,
+            betas=tuple(args.betas),
+            eps=args.eps,
         )
         torch.cuda.synchronize(device)
 
@@ -132,12 +159,15 @@ def _compare_training_equivalence(
     preset: str,
     seed: int,
     steps: int,
+    optimizer_name: str,
     learning_rate: float,
+    weight_decay: float,
+    betas: tuple[float, float],
+    eps: float,
 ) -> dict[str, object]:
     if steps <= 0:
         raise ValueError(f"steps must be positive, got {steps}")
-    if learning_rate <= 0.0:
-        raise ValueError(f"learning_rate must be positive, got {learning_rate}")
+    _validate_optimizer_args(optimizer_name, learning_rate, weight_decay, betas, eps)
 
     _make_cuda_math_deterministic_enough()
     torch.manual_seed(seed)
@@ -151,8 +181,15 @@ def _compare_training_equivalence(
     distributed.train()
     distributed.copy_from_dense_(dense)
 
-    dense_optimizer = torch.optim.SGD(dense.parameters(), lr=learning_rate)
-    distributed_optimizer = torch.optim.SGD(distributed.parameters(), lr=learning_rate)
+    dense_optimizer, distributed_optimizer = _make_optimizers(
+        dense,
+        distributed,
+        optimizer_name=optimizer_name,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        betas=betas,
+        eps=eps,
+    )
 
     rank = get_rank()
     expected_synchronized = set(distributed.replicated_parameter_names())
@@ -201,7 +238,7 @@ def _compare_training_equivalence(
                 "optimizer.dense_parameters_changed",
                 "optimizer",
                 _parameters_changed(dense_before, dense),
-                detail="at least one dense trainable parameter changed after SGD step",
+                detail="at least one dense trainable parameter changed after optimizer step",
             )
         )
         local_checks.append(
@@ -210,7 +247,7 @@ def _compare_training_equivalence(
                 "optimizer.distributed_parameters_changed",
                 "optimizer",
                 _parameters_changed(distributed_before, distributed),
-                detail="at least one local distributed trainable parameter changed after SGD step",
+                detail="at least one local distributed trainable parameter changed after optimizer step",
             )
         )
         local_checks.append(
@@ -224,6 +261,15 @@ def _compare_training_equivalence(
         )
         _add_sharded_parameter_checks(local_checks, rank, dense, distributed)
         _add_replicated_parameter_checks(local_checks, rank, dense, distributed)
+        _add_optimizer_state_checks(
+            local_checks,
+            rank,
+            optimizer_name,
+            dense_optimizer,
+            distributed_optimizer,
+            dense,
+            distributed,
+        )
         _tag_step_checks(local_checks, step)
 
         gathered_step_checks = _gather_checks(local_checks)
@@ -248,7 +294,11 @@ def _compare_training_equivalence(
         "n_embd": dense_config.n_embd,
         "batch_shape": tuple(first_input_ids.shape),
         "steps": steps,
+        "optimizer": optimizer_name,
         "learning_rate": learning_rate,
+        "weight_decay": weight_decay,
+        "betas": betas,
+        "eps": eps,
         "atol": _ATOL,
         "rtol": _RTOL,
         "checks": all_checks,
@@ -256,6 +306,347 @@ def _compare_training_equivalence(
         "step_summaries": step_summaries,
         "max_abs_error": max_abs_error,
     }
+
+
+def _validate_optimizer_args(
+    optimizer_name: str,
+    learning_rate: float,
+    weight_decay: float,
+    betas: tuple[float, float],
+    eps: float,
+) -> None:
+    if learning_rate <= 0.0:
+        raise ValueError(f"learning_rate must be positive, got {learning_rate}")
+    if weight_decay < 0.0:
+        raise ValueError(f"weight_decay must be non-negative, got {weight_decay}")
+    if optimizer_name not in {"sgd", "adamw"}:
+        raise ValueError(f"unknown optimizer {optimizer_name!r}")
+    if len(betas) != 2:
+        raise ValueError(f"AdamW betas must contain exactly two values, got {betas}")
+    beta1, beta2 = betas
+    if not 0.0 <= beta1 < 1.0 or not 0.0 <= beta2 < 1.0:
+        raise ValueError(f"AdamW betas must be in [0.0, 1.0), got {betas}")
+    if eps <= 0.0:
+        raise ValueError(f"AdamW eps must be positive, got {eps}")
+
+
+def _make_optimizers(
+    dense: GPTModel,
+    distributed: DistributedGPTModel,
+    optimizer_name: str,
+    learning_rate: float,
+    weight_decay: float,
+    betas: tuple[float, float],
+    eps: float,
+) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
+    if optimizer_name == "sgd":
+        return (
+            torch.optim.SGD(dense.parameters(), lr=learning_rate, weight_decay=weight_decay),
+            torch.optim.SGD(distributed.parameters(), lr=learning_rate, weight_decay=weight_decay),
+        )
+    if optimizer_name == "adamw":
+        return (
+            torch.optim.AdamW(
+                dense.parameters(),
+                lr=learning_rate,
+                betas=betas,
+                eps=eps,
+                weight_decay=weight_decay,
+            ),
+            torch.optim.AdamW(
+                distributed.parameters(),
+                lr=learning_rate,
+                betas=betas,
+                eps=eps,
+                weight_decay=weight_decay,
+            ),
+        )
+    raise ValueError(f"unknown optimizer {optimizer_name!r}")
+
+
+def _add_optimizer_state_checks(
+    checks: list[dict[str, object]],
+    rank: int,
+    optimizer_name: str,
+    dense_optimizer: torch.optim.Optimizer,
+    distributed_optimizer: torch.optim.Optimizer,
+    dense: GPTModel,
+    distributed: DistributedGPTModel,
+) -> None:
+    if optimizer_name != "adamw":
+        return
+    _add_sharded_optimizer_state_checks(checks, rank, dense_optimizer, distributed_optimizer, dense, distributed)
+    _add_replicated_optimizer_state_checks(checks, rank, dense_optimizer, distributed_optimizer, dense, distributed)
+
+
+def _add_sharded_optimizer_state_checks(
+    checks: list[dict[str, object]],
+    rank: int,
+    dense_optimizer: torch.optim.Optimizer,
+    distributed_optimizer: torch.optim.Optimizer,
+    dense: GPTModel,
+    distributed: DistributedGPTModel,
+) -> None:
+    start = distributed.token_embedding.local_vocab_start
+    end = distributed.token_embedding.local_vocab_end
+    _append_optimizer_state_pair(
+        checks,
+        rank,
+        "token_embedding_lm_head.weight_shard",
+        "optimizer_state_sharded",
+        dense_optimizer,
+        distributed_optimizer,
+        dense.token_embedding.weight,
+        distributed.token_embedding.weight_shards[0],
+        dense_slice=lambda tensor: tensor[start:end],
+    )
+
+    for index, (dense_block, distributed_block) in enumerate(zip(dense.blocks, distributed.blocks)):
+        prefix = f"blocks.{index}"
+        qkv = distributed_block.attn.qkv
+        _append_optimizer_state_pair(
+            checks,
+            rank,
+            f"{prefix}.attn.qkv.weight",
+            "optimizer_state_sharded",
+            dense_optimizer,
+            distributed_optimizer,
+            dense_block.attn.qkv.weight,
+            distributed_block.attn.qkv.weight,
+            dense_slice=lambda tensor, qkv=qkv: _local_qkv_slice(tensor, qkv),
+        )
+        if dense_block.attn.qkv.bias is not None and distributed_block.attn.qkv.bias is not None:
+            _append_optimizer_state_pair(
+                checks,
+                rank,
+                f"{prefix}.attn.qkv.bias",
+                "optimizer_state_sharded",
+                dense_optimizer,
+                distributed_optimizer,
+                dense_block.attn.qkv.bias,
+                distributed_block.attn.qkv.bias,
+                dense_slice=lambda tensor, qkv=qkv: _local_qkv_slice(tensor, qkv),
+            )
+
+        attn_proj = distributed_block.attn.proj
+        _append_optimizer_state_pair(
+            checks,
+            rank,
+            f"{prefix}.attn.proj.weight",
+            "optimizer_state_sharded",
+            dense_optimizer,
+            distributed_optimizer,
+            dense_block.attn.proj.weight,
+            distributed_block.attn.proj.weight,
+            dense_slice=lambda tensor, module=attn_proj: tensor[:, module.local_in_start : module.local_in_end],
+        )
+
+        dense_fc1 = dense_block.mlp.net[0]
+        dense_fc2 = dense_block.mlp.net[2]
+        fc1 = distributed_block.fc1
+        fc2 = distributed_block.fc2
+        _append_optimizer_state_pair(
+            checks,
+            rank,
+            f"{prefix}.mlp.fc1.weight",
+            "optimizer_state_sharded",
+            dense_optimizer,
+            distributed_optimizer,
+            dense_fc1.weight,
+            distributed_block.fc1.weight,
+            dense_slice=lambda tensor, module=fc1: tensor[module.local_out_start : module.local_out_end],
+        )
+        if dense_fc1.bias is not None and distributed_block.fc1.bias is not None:
+            _append_optimizer_state_pair(
+                checks,
+                rank,
+                f"{prefix}.mlp.fc1.bias",
+                "optimizer_state_sharded",
+                dense_optimizer,
+                distributed_optimizer,
+                dense_fc1.bias,
+                distributed_block.fc1.bias,
+                dense_slice=lambda tensor, module=fc1: tensor[module.local_out_start : module.local_out_end],
+            )
+        _append_optimizer_state_pair(
+            checks,
+            rank,
+            f"{prefix}.mlp.fc2.weight",
+            "optimizer_state_sharded",
+            dense_optimizer,
+            distributed_optimizer,
+            dense_fc2.weight,
+            distributed_block.fc2.weight,
+            dense_slice=lambda tensor, module=fc2: tensor[:, module.local_in_start : module.local_in_end],
+        )
+
+
+def _add_replicated_optimizer_state_checks(
+    checks: list[dict[str, object]],
+    rank: int,
+    dense_optimizer: torch.optim.Optimizer,
+    distributed_optimizer: torch.optim.Optimizer,
+    dense: GPTModel,
+    distributed: DistributedGPTModel,
+) -> None:
+    _append_optimizer_state_pair(
+        checks,
+        rank,
+        "position_embedding.weight",
+        "optimizer_state_replicated",
+        dense_optimizer,
+        distributed_optimizer,
+        dense.position_embedding.weight,
+        distributed.position_embedding.weight,
+    )
+
+    for index, (dense_block, distributed_block) in enumerate(zip(dense.blocks, distributed.blocks)):
+        prefix = f"blocks.{index}"
+        _append_optimizer_state_pair(
+            checks,
+            rank,
+            f"{prefix}.ln_1.weight",
+            "optimizer_state_replicated",
+            dense_optimizer,
+            distributed_optimizer,
+            dense_block.ln_1.weight,
+            distributed_block.ln_1.weight,
+        )
+        _append_optimizer_state_pair(
+            checks,
+            rank,
+            f"{prefix}.ln_1.bias",
+            "optimizer_state_replicated",
+            dense_optimizer,
+            distributed_optimizer,
+            dense_block.ln_1.bias,
+            distributed_block.ln_1.bias,
+        )
+        _append_optimizer_state_pair(
+            checks,
+            rank,
+            f"{prefix}.ln_2.weight",
+            "optimizer_state_replicated",
+            dense_optimizer,
+            distributed_optimizer,
+            dense_block.ln_2.weight,
+            distributed_block.ln_2.weight,
+        )
+        _append_optimizer_state_pair(
+            checks,
+            rank,
+            f"{prefix}.ln_2.bias",
+            "optimizer_state_replicated",
+            dense_optimizer,
+            distributed_optimizer,
+            dense_block.ln_2.bias,
+            distributed_block.ln_2.bias,
+        )
+        if dense_block.attn.proj.bias is not None and distributed_block.attn.proj.bias is not None:
+            _append_optimizer_state_pair(
+                checks,
+                rank,
+                f"{prefix}.attn.proj.bias",
+                "optimizer_state_replicated",
+                dense_optimizer,
+                distributed_optimizer,
+                dense_block.attn.proj.bias,
+                distributed_block.attn.proj.bias,
+            )
+        dense_fc2 = dense_block.mlp.net[2]
+        if dense_fc2.bias is not None and distributed_block.fc2.bias is not None:
+            _append_optimizer_state_pair(
+                checks,
+                rank,
+                f"{prefix}.mlp.fc2.bias",
+                "optimizer_state_replicated",
+                dense_optimizer,
+                distributed_optimizer,
+                dense_fc2.bias,
+                distributed_block.fc2.bias,
+            )
+
+    _append_optimizer_state_pair(
+        checks,
+        rank,
+        "ln_f.weight",
+        "optimizer_state_replicated",
+        dense_optimizer,
+        distributed_optimizer,
+        dense.ln_f.weight,
+        distributed.ln_f.weight,
+    )
+    _append_optimizer_state_pair(
+        checks,
+        rank,
+        "ln_f.bias",
+        "optimizer_state_replicated",
+        dense_optimizer,
+        distributed_optimizer,
+        dense.ln_f.bias,
+        distributed.ln_f.bias,
+    )
+
+
+def _append_optimizer_state_pair(
+    checks: list[dict[str, object]],
+    rank: int,
+    name: str,
+    category: str,
+    dense_optimizer: torch.optim.Optimizer,
+    distributed_optimizer: torch.optim.Optimizer,
+    dense_parameter: torch.nn.Parameter,
+    distributed_parameter: torch.nn.Parameter,
+    dense_slice: Callable[[torch.Tensor], torch.Tensor] | None = None,
+) -> None:
+    dense_state = _require_optimizer_state(dense_optimizer, dense_parameter, f"dense {name}")
+    distributed_state = _require_optimizer_state(
+        distributed_optimizer,
+        distributed_parameter,
+        f"distributed {name}",
+    )
+    for field in ("step", "exp_avg", "exp_avg_sq"):
+        expected = _optimizer_state_tensor(dense_state, field, dense_parameter)
+        actual = _optimizer_state_tensor(distributed_state, field, distributed_parameter)
+        if dense_slice is not None and field != "step":
+            expected = dense_slice(expected)
+        checks.append(
+            _make_tensor_check(
+                rank,
+                f"{name}.adamw.{field}",
+                category,
+                expected,
+                actual,
+            )
+        )
+
+
+def _require_optimizer_state(
+    optimizer: torch.optim.Optimizer,
+    parameter: torch.nn.Parameter,
+    name: str,
+) -> dict[str, object]:
+    state = optimizer.state.get(parameter)
+    if not state:
+        raise AssertionError(f"{name} has no optimizer state")
+    return state
+
+
+def _optimizer_state_tensor(
+    state: dict[str, object],
+    field: str,
+    reference: torch.nn.Parameter,
+) -> torch.Tensor:
+    if field not in state:
+        raise AssertionError(f"optimizer state is missing {field!r}")
+    value = state[field]
+    if isinstance(value, torch.Tensor):
+        tensor = value.detach()
+    else:
+        tensor = torch.tensor(value, device=reference.device)
+    if field == "step":
+        return tensor.to(dtype=torch.float32)
+    return tensor
 
 
 def _make_synthetic_training_batch(
@@ -339,7 +730,12 @@ def _print_report(
     print(f"n_embd: {result['n_embd']}")
     print(f"batch shape: {result['batch_shape']}")
     print(f"training steps: {result['steps']}")
-    print(f"SGD learning rate: {result['learning_rate']}")
+    print(f"optimizer: {result['optimizer']}")
+    print(f"learning rate: {result['learning_rate']}")
+    print(f"weight decay: {result['weight_decay']}")
+    if result["optimizer"] == "adamw":
+        print(f"AdamW betas: {result['betas']}")
+        print(f"AdamW eps: {result['eps']}")
     print(f"tolerance: atol={result['atol']}, rtol={result['rtol']}")
     print()
     print("Training checks")
@@ -373,8 +769,9 @@ def _print_report(
 
     print()
     print("Note:")
-    print("  This runs a short SGD loop and compares every step with dense GPT slices.")
+    print("  This runs a short optimizer loop and compares every step with dense GPT slices.")
     print("  Each step checks logits, loss, gradient shards, replicated gradients, and updated shards.")
+    print("  With --optimizer adamw, it also checks exp_avg, exp_avg_sq, and step state shards.")
     print("  Replicated gradients are synchronized explicitly before each local optimizer step.")
     print("  Dropout is disabled in the presets; CUDA RNG tracking is not claimed here.")
     print("  This is an isolated CUDA/NCCL prototype validation path.")

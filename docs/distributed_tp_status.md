@@ -32,6 +32,7 @@ parallel behavior remains separate and unchanged.
 | CUDA/NCCL GPT smoke | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small` | Dense vs distributed GPT forward/loss, backward smoke, replicated gradient sync, local SGD step smoke, activation checkpoint backward smoke | Passed on 4-GPU A800 |
 | CUDA/NCCL GPT gradient and optimizer equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py --preset small` | Dense gradients vs local distributed gradient shards, replicated gradients after explicit sync, and one SGD-updated dense parameter slice vs local distributed shard | Passed on 4-GPU A800: 236/236 checks, max abs error around `1.8e-7` |
 | CUDA/NCCL GPT multi-step training equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5` | A short deterministic SGD loop comparing logits, loss, gradient shards, replicated gradients, and updated parameter shards after every step | Passed on 4-GPU A800: 1240/1240 checks, max abs error around `4.8e-7` |
+| CUDA/NCCL GPT AdamW state equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 --optimizer adamw --weight-decay 0.01` | A short deterministic AdamW loop comparing logits, loss, gradient shards, replicated gradients, updated parameter shards, and AdamW `step`/`exp_avg`/`exp_avg_sq` state shards after every step | Ready for 4-GPU A800 validation |
 
 ## Current Guarantees
 
@@ -66,6 +67,22 @@ GPT instances alive across multiple deterministic steps. Each step checks
 logits, loss, sharded gradients, replicated gradients after explicit
 synchronization, and updated parameter shards.
 
+## Next Strict A800 Check
+
+The next stricter validation target is AdamW optimizer-state equivalence:
+
+```bash
+torchrun --standalone --nproc_per_node=4 \
+  examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 \
+  --optimizer adamw --weight-decay 0.01
+```
+
+This uses the same short deterministic training loop, but also compares the
+AdamW `step`, `exp_avg`, and `exp_avg_sq` state for rank-local shards and
+replicated parameters against the corresponding dense parameter or dense tensor
+slice. The status should only be changed from ready to passed after this strict
+command completes on the A800 environment.
+
 ## Important Non-Goals
 
 The current prototype does not implement or claim:
@@ -74,7 +91,7 @@ The current prototype does not implement or claim:
 - a full distributed training engine
 - Megatron-LM feature parity
 - dropout RNG tracking across tensor-parallel ranks
-- AdamW or distributed optimizer equivalence
+- a production distributed optimizer
 - mixed precision, FP8, or custom CUDA kernels
 - sequence parallelism
 - pipeline parallelism
@@ -117,6 +134,14 @@ Run the CUDA/NCCL multi-step training equivalence check:
 ```bash
 torchrun --standalone --nproc_per_node=4 \
   examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5
+```
+
+Run the CUDA/NCCL AdamW optimizer-state equivalence check:
+
+```bash
+torchrun --standalone --nproc_per_node=4 \
+  examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 \
+  --optimizer adamw --weight-decay 0.01
 ```
 
 The CUDA/NCCL commands are single-node prototype validations only. They should
