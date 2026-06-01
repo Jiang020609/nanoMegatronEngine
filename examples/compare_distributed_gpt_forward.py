@@ -32,7 +32,8 @@ def main() -> None:
         print("Run with:")
         print("  python examples/compare_distributed_gpt_forward.py --spawn 2")
         print("This demo uses CPU/Gloo module-level distributed GPT forward prototypes.")
-        print("Training, optimizer steps, and real distributed GPT TP are not wired yet.")
+        print("Training loops and real distributed GPT TP are not wired yet.")
+        print("The optimizer section is a one-step smoke check only.")
         print("No NCCL, GPU, multi-node orchestration, or speedup claims.")
         return
 
@@ -73,10 +74,16 @@ def _run_demo() -> None:
             print(f"  rank 0 tied vocab grad shape: {result['tied_vocab_grad_shape']}")
             print(f"  rank 0 tied vocab grad nonzero: {result['tied_vocab_grad_nonzero']}")
             print()
+            print("Optimizer step smoke")
+            print(f"  one SGD step completed: {result['optimizer_step_completed']}")
+            print(f"  local parameters changed: {result['parameters_changed']}")
+            print(f"  local parameters finite after step: {result['parameters_finite_after_step']}")
+            print(f"  post-step loss finite: {result['post_step_loss_finite']}")
+            print()
             print("Note:")
             print("  This is a CPU/Gloo distributed GPT forward prototype.")
-            print("  The backward section checks gradient plumbing only; optimizer steps are not wired yet.")
-            print("  Full dense-equivalent GPT training gradients are not claimed yet.")
+            print("  The backward and optimizer sections check local plumbing only.")
+            print("  Full dense-equivalent distributed GPT training is not claimed yet.")
             print("  Real distributed GPT TP is not wired into the main GPTModel path.")
             print("  No NCCL/GPU/multi-node/speedup claims.")
     finally:
@@ -121,6 +128,7 @@ def _compare_gpt_forward(world_size: int) -> dict[str, object]:
     distributed_tied_vocab_grad = distributed.token_embedding.weight_shards[0].grad
     if distributed_tied_vocab_grad.shape != dense_tied_vocab_grad.shape:
         raise AssertionError("distributed GPT tied vocab gradient shard shape does not match the dense slice shape")
+    optimizer_result = _run_optimizer_step_smoke(distributed, input_ids, targets)
 
     return {
         "vocab_size": dense_config.vocab_size,
@@ -137,6 +145,7 @@ def _compare_gpt_forward(world_size: int) -> dict[str, object]:
         "grads_finite": _all_trainable_grads_are_finite(distributed),
         "tied_vocab_grad_shape": distributed_tied_vocab_grad.shape,
         "tied_vocab_grad_nonzero": bool(distributed_tied_vocab_grad.abs().sum().item() > 0.0),
+        **optimizer_result,
     }
 
 
@@ -202,6 +211,34 @@ def _all_trainable_grads_are_finite(model: torch.nn.Module) -> bool:
     if not grads:
         return False
     return all(grad is not None and torch.isfinite(grad).all() for grad in grads)
+
+
+def _run_optimizer_step_smoke(
+    model: DistributedGPTModel,
+    input_ids: torch.Tensor,
+    targets: torch.Tensor,
+) -> dict[str, object]:
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+    before = [parameter.detach().clone() for parameter in model.parameters() if parameter.requires_grad]
+    optimizer.step()
+    after = [parameter.detach() for parameter in model.parameters() if parameter.requires_grad]
+    parameters_changed = bool(any(not torch.equal(old, new) for old, new in zip(before, after)))
+    parameters_finite = bool(all(torch.isfinite(parameter).all() for parameter in after))
+    with torch.no_grad():
+        _, post_step_loss = model(input_ids, targets)
+    post_step_loss_finite = bool(post_step_loss is not None and torch.isfinite(post_step_loss))
+    if not parameters_changed:
+        raise AssertionError("distributed GPT optimizer smoke step did not change any local trainable parameter")
+    if not parameters_finite:
+        raise AssertionError("distributed GPT optimizer smoke step produced non-finite local parameters")
+    if not post_step_loss_finite:
+        raise AssertionError("distributed GPT optimizer smoke step produced a non-finite post-step loss")
+    return {
+        "optimizer_step_completed": True,
+        "parameters_changed": parameters_changed,
+        "parameters_finite_after_step": parameters_finite,
+        "post_step_loss_finite": post_step_loss_finite,
+    }
 
 
 def _has_torchrun_env() -> bool:

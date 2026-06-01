@@ -47,6 +47,7 @@ def _distributed_gpt_worker(rank: int, world_size: int, port: int) -> None:
         init_distributed_from_env("gloo")
         _assert_dense_gpt_logits_and_loss_match_distributed(world_size)
         _assert_distributed_gpt_loss_backward_smoke(world_size)
+        _assert_distributed_gpt_optimizer_step_smoke(world_size)
         _assert_tensor_parallel_size_mismatch_raises()
         _assert_invalid_vocab_divisibility_raises()
         _assert_invalid_sequence_length_raises(world_size)
@@ -122,6 +123,43 @@ def _assert_distributed_gpt_loss_backward_smoke(world_size: int) -> None:
     assert distributed.token_embedding.weight_shards[0].grad is not None
     assert distributed.token_embedding.weight_shards[0].grad.shape == dense.token_embedding.weight.grad[start:end].shape
     assert distributed.token_embedding.weight_shards[0].grad.abs().sum().item() > 0.0
+
+
+def _assert_distributed_gpt_optimizer_step_smoke(world_size: int) -> None:
+    torch.manual_seed(1303)
+    distributed = DistributedGPTModel(_distributed_config(world_size=world_size))
+    distributed.train()
+    optimizer = torch.optim.SGD(distributed.parameters(), lr=1e-3)
+    input_ids = torch.tensor(
+        [
+            [0, 1, 16, 31, 4],
+            [17, 2, 30, 8, 15],
+        ]
+    )
+    targets = torch.tensor(
+        [
+            [1, 16, 31, 4, 5],
+            [2, 30, 8, 15, 0],
+        ]
+    )
+
+    before = [parameter.detach().clone() for parameter in distributed.parameters() if parameter.requires_grad]
+    optimizer.zero_grad(set_to_none=True)
+    _, loss = distributed(input_ids, targets)
+    assert loss is not None
+    assert torch.isfinite(loss)
+    loss.backward()
+    _assert_all_trainable_grads_are_finite(distributed)
+    optimizer.step()
+
+    after = [parameter.detach() for parameter in distributed.parameters() if parameter.requires_grad]
+    assert len(before) == len(after)
+    assert any(not torch.equal(old, new) for old, new in zip(before, after))
+    assert all(torch.isfinite(parameter).all() for parameter in after)
+    with torch.no_grad():
+        _, post_step_loss = distributed(input_ids, targets)
+    assert post_step_loss is not None
+    assert torch.isfinite(post_step_loss)
 
 
 def _assert_tensor_parallel_size_mismatch_raises() -> None:
