@@ -64,6 +64,7 @@ def _run_demo(args: argparse.Namespace) -> None:
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
 
+    completed = False
     init_distributed_from_env("nccl")
     try:
         rank = get_rank()
@@ -134,8 +135,12 @@ def _run_demo(args: argparse.Namespace) -> None:
 
         if args.strict:
             _assert_strict_result(result)
+        _synchronize_and_barrier(device)
+        completed = True
     finally:
         if dist.is_available() and dist.is_initialized():
+            if completed:
+                torch.cuda.synchronize(device)
             dist.destroy_process_group()
 
 
@@ -363,6 +368,14 @@ def _outputs_close(expected: torch.Tensor, actual: torch.Tensor) -> bool:
 
 def _tensor_is_finite(tensor: torch.Tensor) -> bool:
     return bool(torch.isfinite(tensor).all())
+
+
+def _synchronize_and_barrier(device: torch.device) -> None:
+    import torch.distributed as dist
+
+    torch.cuda.synchronize(device)
+    dist.barrier()
+    torch.cuda.synchronize(device)
 
 
 def _strict_checks_pass(result: dict[str, object]) -> bool:
