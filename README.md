@@ -393,4 +393,12 @@ or speedup claims.
   for single-node GPU/NCCL validation of the prototype path only; the main
   `GPTModel` path is not wired to real distributed TP, and there are no
   multi-node orchestration or speedup claims.
+- `torchrun --standalone --nproc_per_node=4
+  examples/compare_distributed_gpt_gradients_nccl.py --preset small` runs a
+  stricter CUDA/NCCL gradient-slice comparison. It compares dense GPT
+  gradients with the corresponding local distributed GPT parameter shards,
+  including QKV head slices, row/column-parallel linear slices, tied vocab
+  shards, and replicated parameters after explicit replicated-gradient
+  synchronization. This is diagnostic prototype validation, not a full
+  distributed training claim.
 - Optionally add a simple pipeline schedule visualization.
