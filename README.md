@@ -77,6 +77,7 @@ python examples/compare_distributed_vocab_parallel.py --spawn 2
 python examples/compare_distributed_mlp.py --spawn 2
 python examples/compare_distributed_attention.py --spawn 2
 python examples/compare_distributed_transformer_block.py --spawn 2
+python examples/compare_distributed_gpt_forward.py --spawn 2
 ```
 
 ## v0.2 Fake Tensor Parallelism
@@ -363,5 +364,10 @@ or speedup claims.
   replicated LayerNorm, `DistributedCausalSelfAttention`, and the distributed
   MLP pattern from v0.9. GPT/model real distributed tensor parallelism is not
   wired yet.
+- `compare_distributed_gpt_forward.py --spawn 2` demonstrates an isolated
+  CPU/Gloo distributed GPT forward prototype. It composes distributed vocab
+  embeddings, replicated position embeddings and final LayerNorm, distributed
+  transformer blocks, and a distributed LM head. Training and optimizer steps
+  are not wired yet.
 - Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.
