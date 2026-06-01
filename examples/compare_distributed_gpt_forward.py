@@ -67,9 +67,17 @@ def _run_demo() -> None:
             print(f"  loss max abs error: {result['loss_error']:.6e}")
             print(f"  loss close: {result['loss_close']}")
             print()
+            print("Backward smoke")
+            print("  loss backward completed on every rank")
+            print(f"  trainable gradients finite: {result['grads_finite']}")
+            print(f"  rank 0 tied vocab grad shape: {result['tied_vocab_grad_shape']}")
+            print(f"  rank 0 tied vocab grad nonzero: {result['tied_vocab_grad_nonzero']}")
+            print()
             print("Note:")
             print("  This is a CPU/Gloo distributed GPT forward prototype.")
-            print("  Training, optimizer steps, and real distributed GPT TP are not wired yet.")
+            print("  The backward section checks gradient plumbing only; optimizer steps are not wired yet.")
+            print("  Full dense-equivalent GPT training gradients are not claimed yet.")
+            print("  Real distributed GPT TP is not wired into the main GPTModel path.")
             print("  No NCCL/GPU/multi-node/speedup claims.")
     finally:
         _destroy_process_group()
@@ -101,6 +109,18 @@ def _compare_gpt_forward(world_size: int) -> dict[str, object]:
     distributed_logits, distributed_loss = distributed(input_ids, targets)
     assert dense_loss is not None
     assert distributed_loss is not None
+    dense_loss.backward()
+    distributed_loss.backward()
+
+    _assert_all_trainable_grads_are_finite(distributed)
+    start = distributed.token_embedding.local_vocab_start
+    end = distributed.token_embedding.local_vocab_end
+    assert dense.token_embedding.weight.grad is not None
+    assert distributed.token_embedding.weight_shards[0].grad is not None
+    dense_tied_vocab_grad = dense.token_embedding.weight.grad[start:end]
+    distributed_tied_vocab_grad = distributed.token_embedding.weight_shards[0].grad
+    if distributed_tied_vocab_grad.shape != dense_tied_vocab_grad.shape:
+        raise AssertionError("distributed GPT tied vocab gradient shard shape does not match the dense slice shape")
 
     return {
         "vocab_size": dense_config.vocab_size,
@@ -114,6 +134,9 @@ def _compare_gpt_forward(world_size: int) -> dict[str, object]:
         "logits_close": _outputs_close(dense_logits, distributed_logits),
         "loss_error": _max_abs_error(dense_loss, distributed_loss),
         "loss_close": _outputs_close(dense_loss, distributed_loss),
+        "grads_finite": _all_trainable_grads_are_finite(distributed),
+        "tied_vocab_grad_shape": distributed_tied_vocab_grad.shape,
+        "tied_vocab_grad_nonzero": bool(distributed_tied_vocab_grad.abs().sum().item() > 0.0),
     }
 
 
@@ -167,6 +190,18 @@ def _max_abs_error(expected: torch.Tensor, actual: torch.Tensor) -> float:
 
 def _outputs_close(expected: torch.Tensor, actual: torch.Tensor) -> bool:
     return bool(torch.allclose(expected, actual, atol=1e-6, rtol=1e-5))
+
+
+def _assert_all_trainable_grads_are_finite(model: torch.nn.Module) -> None:
+    if not _all_trainable_grads_are_finite(model):
+        raise AssertionError("distributed GPT prototype produced missing or non-finite gradients")
+
+
+def _all_trainable_grads_are_finite(model: torch.nn.Module) -> bool:
+    grads = [parameter.grad for parameter in model.parameters() if parameter.requires_grad]
+    if not grads:
+        return False
+    return all(grad is not None and torch.isfinite(grad).all() for grad in grads)
 
 
 def _has_torchrun_env() -> bool:

@@ -46,6 +46,7 @@ def _distributed_gpt_worker(rank: int, world_size: int, port: int) -> None:
     try:
         init_distributed_from_env("gloo")
         _assert_dense_gpt_logits_and_loss_match_distributed(world_size)
+        _assert_distributed_gpt_loss_backward_smoke(world_size)
         _assert_tensor_parallel_size_mismatch_raises()
         _assert_invalid_vocab_divisibility_raises()
         _assert_invalid_sequence_length_raises(world_size)
@@ -85,6 +86,42 @@ def _assert_dense_gpt_logits_and_loss_match_distributed(world_size: int) -> None
     assert distributed_loss is not None
     torch.testing.assert_close(distributed_logits, dense_logits, atol=1e-6, rtol=1e-5)
     torch.testing.assert_close(distributed_loss, dense_loss, atol=1e-6, rtol=1e-5)
+
+
+def _assert_distributed_gpt_loss_backward_smoke(world_size: int) -> None:
+    torch.manual_seed(1302)
+    dense = GPTModel(_dense_config())
+    distributed = DistributedGPTModel(_distributed_config(world_size=world_size))
+    distributed.copy_from_dense_(dense)
+
+    input_ids = torch.tensor(
+        [
+            [0, 1, 16, 31, 4],
+            [17, 2, 30, 8, 15],
+        ]
+    )
+    targets = torch.tensor(
+        [
+            [1, 16, 31, 4, 5],
+            [2, 30, 8, 15, 0],
+        ]
+    )
+
+    _, dense_loss = dense(input_ids, targets)
+    _, distributed_loss = distributed(input_ids, targets)
+    assert dense_loss is not None
+    assert distributed_loss is not None
+
+    dense_loss.backward()
+    distributed_loss.backward()
+
+    _assert_all_trainable_grads_are_finite(distributed)
+    start = distributed.token_embedding.local_vocab_start
+    end = distributed.token_embedding.local_vocab_end
+    assert dense.token_embedding.weight.grad is not None
+    assert distributed.token_embedding.weight_shards[0].grad is not None
+    assert distributed.token_embedding.weight_shards[0].grad.shape == dense.token_embedding.weight.grad[start:end].shape
+    assert distributed.token_embedding.weight_shards[0].grad.abs().sum().item() > 0.0
 
 
 def _assert_tensor_parallel_size_mismatch_raises() -> None:
@@ -140,3 +177,9 @@ def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def _assert_all_trainable_grads_are_finite(model: torch.nn.Module) -> None:
+    grads = [parameter.grad for parameter in model.parameters() if parameter.requires_grad]
+    assert grads
+    assert all(grad is not None and torch.isfinite(grad).all() for grad in grads)

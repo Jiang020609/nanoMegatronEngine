@@ -368,6 +368,7 @@ or speedup claims.
   CPU/Gloo distributed GPT forward prototype. It composes distributed vocab
   embeddings, replicated position embeddings and final LayerNorm, distributed
   transformer blocks, and a distributed LM head. Training and optimizer steps
-  are not wired yet.
+  are not wired yet. The demo includes a small loss-backward smoke check only,
+  not a dense-equivalent distributed training-gradient claim.
 - Add clearer parameter-count and shard-shape reporting.
 - Optionally add a simple pipeline schedule visualization.
