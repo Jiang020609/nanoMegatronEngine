@@ -82,7 +82,7 @@ python examples/train_distributed_gpt_smoke.py --spawn 2
 torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small
 torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py --preset small
 torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5
-torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 --optimizer adamw --weight-decay 0.01
+torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 --optimizer adamw --weight-decay 0.01 --adamw-parameter-atol 1e-4
 ```
 
 For the current distributed tensor-parallel prototype validation matrix and
@@ -421,6 +421,8 @@ summarized in [`docs/distributed_tp_status.md`](docs/distributed_tp_status.md).
 - The same training equivalence script also supports `--optimizer adamw`. With
   AdamW it compares `step`, `exp_avg`, and `exp_avg_sq` optimizer state for
   local shards and replicated parameters against the matching dense parameters
-  or dense tensor slices. This is still diagnostic prototype validation, not a
-  production distributed optimizer.
+  or dense tensor slices. AdamW updated parameters use an explicit
+  `--adamw-parameter-atol` tolerance because adaptive updates can amplify tiny
+  dense-vs-distributed numerical differences in bias terms. This is still
+  diagnostic prototype validation, not a production distributed optimizer.
 - Optionally add a simple pipeline schedule visualization.

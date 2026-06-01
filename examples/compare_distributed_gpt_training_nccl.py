@@ -63,6 +63,21 @@ def main() -> None:
         help="AdamW beta coefficients",
     )
     parser.add_argument("--eps", type=float, default=1e-8, help="AdamW epsilon")
+    parser.add_argument(
+        "--adamw-parameter-atol",
+        type=float,
+        default=1e-4,
+        help=(
+            "absolute tolerance for AdamW updated parameter checks; optimizer state, "
+            "gradients, logits, and losses still use the base tolerance"
+        ),
+    )
+    parser.add_argument(
+        "--adamw-parameter-rtol",
+        type=float,
+        default=_RTOL,
+        help="relative tolerance for AdamW updated parameter checks",
+    )
     parser.add_argument("--max-report", type=int, default=24, help="maximum failed/largest-error checks to print")
     parser.add_argument(
         "--no-strict",
@@ -83,7 +98,7 @@ def main() -> None:
         print(
             "  torchrun --standalone --nproc_per_node=4 "
             "examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 "
-            "--optimizer adamw --weight-decay 0.01"
+            "--optimizer adamw --weight-decay 0.01 --adamw-parameter-atol 1e-4"
         )
         print("Strict validation is enabled by default; use --no-strict to print without failing.")
         print("This compares a short optimizer loop against dense GPT slices after every step.")
@@ -135,6 +150,8 @@ def _run_demo(args: argparse.Namespace) -> None:
             weight_decay=args.weight_decay,
             betas=tuple(args.betas),
             eps=args.eps,
+            adamw_parameter_atol=args.adamw_parameter_atol,
+            adamw_parameter_rtol=args.adamw_parameter_rtol,
         )
         torch.cuda.synchronize(device)
 
@@ -164,10 +181,20 @@ def _compare_training_equivalence(
     weight_decay: float,
     betas: tuple[float, float],
     eps: float,
+    adamw_parameter_atol: float,
+    adamw_parameter_rtol: float,
 ) -> dict[str, object]:
     if steps <= 0:
         raise ValueError(f"steps must be positive, got {steps}")
-    _validate_optimizer_args(optimizer_name, learning_rate, weight_decay, betas, eps)
+    _validate_optimizer_args(
+        optimizer_name,
+        learning_rate,
+        weight_decay,
+        betas,
+        eps,
+        adamw_parameter_atol,
+        adamw_parameter_rtol,
+    )
 
     _make_cuda_math_deterministic_enough()
     torch.manual_seed(seed)
@@ -259,8 +286,26 @@ def _compare_training_equivalence(
                 detail="dense and local distributed trainable parameters are finite after SGD step",
             )
         )
-        _add_sharded_parameter_checks(local_checks, rank, dense, distributed)
-        _add_replicated_parameter_checks(local_checks, rank, dense, distributed)
+        if optimizer_name == "adamw":
+            _add_sharded_parameter_checks_with_tolerance(
+                local_checks,
+                rank,
+                dense,
+                distributed,
+                atol=adamw_parameter_atol,
+                rtol=adamw_parameter_rtol,
+            )
+            _add_replicated_parameter_checks_with_tolerance(
+                local_checks,
+                rank,
+                dense,
+                distributed,
+                atol=adamw_parameter_atol,
+                rtol=adamw_parameter_rtol,
+            )
+        else:
+            _add_sharded_parameter_checks(local_checks, rank, dense, distributed)
+            _add_replicated_parameter_checks(local_checks, rank, dense, distributed)
         _add_optimizer_state_checks(
             local_checks,
             rank,
@@ -299,6 +344,8 @@ def _compare_training_equivalence(
         "weight_decay": weight_decay,
         "betas": betas,
         "eps": eps,
+        "adamw_parameter_atol": adamw_parameter_atol,
+        "adamw_parameter_rtol": adamw_parameter_rtol,
         "atol": _ATOL,
         "rtol": _RTOL,
         "checks": all_checks,
@@ -314,6 +361,8 @@ def _validate_optimizer_args(
     weight_decay: float,
     betas: tuple[float, float],
     eps: float,
+    adamw_parameter_atol: float,
+    adamw_parameter_rtol: float,
 ) -> None:
     if learning_rate <= 0.0:
         raise ValueError(f"learning_rate must be positive, got {learning_rate}")
@@ -328,6 +377,10 @@ def _validate_optimizer_args(
         raise ValueError(f"AdamW betas must be in [0.0, 1.0), got {betas}")
     if eps <= 0.0:
         raise ValueError(f"AdamW eps must be positive, got {eps}")
+    if adamw_parameter_atol < 0.0:
+        raise ValueError(f"adamw_parameter_atol must be non-negative, got {adamw_parameter_atol}")
+    if adamw_parameter_rtol < 0.0:
+        raise ValueError(f"adamw_parameter_rtol must be non-negative, got {adamw_parameter_rtol}")
 
 
 def _make_optimizers(
@@ -377,6 +430,235 @@ def _add_optimizer_state_checks(
         return
     _add_sharded_optimizer_state_checks(checks, rank, dense_optimizer, distributed_optimizer, dense, distributed)
     _add_replicated_optimizer_state_checks(checks, rank, dense_optimizer, distributed_optimizer, dense, distributed)
+
+
+def _add_sharded_parameter_checks_with_tolerance(
+    checks: list[dict[str, object]],
+    rank: int,
+    dense: GPTModel,
+    distributed: DistributedGPTModel,
+    atol: float,
+    rtol: float,
+) -> None:
+    start = distributed.token_embedding.local_vocab_start
+    end = distributed.token_embedding.local_vocab_end
+    checks.append(
+        _make_tensor_check_with_tolerance(
+            rank,
+            "token_embedding_lm_head.weight_shard",
+            "optimizer_sharded",
+            dense.token_embedding.weight[start:end],
+            distributed.token_embedding.weight_shards[0],
+            atol=atol,
+            rtol=rtol,
+        )
+    )
+
+    for index, (dense_block, distributed_block) in enumerate(zip(dense.blocks, distributed.blocks)):
+        prefix = f"blocks.{index}"
+        qkv = distributed_block.attn.qkv
+        checks.append(
+            _make_tensor_check_with_tolerance(
+                rank,
+                f"{prefix}.attn.qkv.weight",
+                "optimizer_sharded",
+                _local_qkv_slice(dense_block.attn.qkv.weight, qkv),
+                distributed_block.attn.qkv.weight,
+                atol=atol,
+                rtol=rtol,
+            )
+        )
+        if dense_block.attn.qkv.bias is not None and distributed_block.attn.qkv.bias is not None:
+            checks.append(
+                _make_tensor_check_with_tolerance(
+                    rank,
+                    f"{prefix}.attn.qkv.bias",
+                    "optimizer_sharded",
+                    _local_qkv_slice(dense_block.attn.qkv.bias, qkv),
+                    distributed_block.attn.qkv.bias,
+                    atol=atol,
+                    rtol=rtol,
+                )
+            )
+
+        attn_proj = distributed_block.attn.proj
+        checks.append(
+            _make_tensor_check_with_tolerance(
+                rank,
+                f"{prefix}.attn.proj.weight",
+                "optimizer_sharded",
+                dense_block.attn.proj.weight[:, attn_proj.local_in_start : attn_proj.local_in_end],
+                distributed_block.attn.proj.weight,
+                atol=atol,
+                rtol=rtol,
+            )
+        )
+
+        dense_fc1 = dense_block.mlp.net[0]
+        dense_fc2 = dense_block.mlp.net[2]
+        fc1 = distributed_block.fc1
+        fc2 = distributed_block.fc2
+        checks.append(
+            _make_tensor_check_with_tolerance(
+                rank,
+                f"{prefix}.mlp.fc1.weight",
+                "optimizer_sharded",
+                dense_fc1.weight[fc1.local_out_start : fc1.local_out_end],
+                distributed_block.fc1.weight,
+                atol=atol,
+                rtol=rtol,
+            )
+        )
+        if dense_fc1.bias is not None and distributed_block.fc1.bias is not None:
+            checks.append(
+                _make_tensor_check_with_tolerance(
+                    rank,
+                    f"{prefix}.mlp.fc1.bias",
+                    "optimizer_sharded",
+                    dense_fc1.bias[fc1.local_out_start : fc1.local_out_end],
+                    distributed_block.fc1.bias,
+                    atol=atol,
+                    rtol=rtol,
+                )
+            )
+        checks.append(
+            _make_tensor_check_with_tolerance(
+                rank,
+                f"{prefix}.mlp.fc2.weight",
+                "optimizer_sharded",
+                dense_fc2.weight[:, fc2.local_in_start : fc2.local_in_end],
+                distributed_block.fc2.weight,
+                atol=atol,
+                rtol=rtol,
+            )
+        )
+
+
+def _add_replicated_parameter_checks_with_tolerance(
+    checks: list[dict[str, object]],
+    rank: int,
+    dense: GPTModel,
+    distributed: DistributedGPTModel,
+    atol: float,
+    rtol: float,
+) -> None:
+    checks.append(
+        _make_tensor_check_with_tolerance(
+            rank,
+            "position_embedding.weight",
+            "optimizer_replicated",
+            dense.position_embedding.weight,
+            distributed.position_embedding.weight,
+            atol=atol,
+            rtol=rtol,
+        )
+    )
+
+    for index, (dense_block, distributed_block) in enumerate(zip(dense.blocks, distributed.blocks)):
+        prefix = f"blocks.{index}"
+        _append_replicated_parameter_pair_with_tolerance(
+            checks, rank, f"{prefix}.ln_1.weight", dense_block.ln_1.weight, distributed_block.ln_1.weight, atol, rtol
+        )
+        _append_replicated_parameter_pair_with_tolerance(
+            checks, rank, f"{prefix}.ln_1.bias", dense_block.ln_1.bias, distributed_block.ln_1.bias, atol, rtol
+        )
+        _append_replicated_parameter_pair_with_tolerance(
+            checks, rank, f"{prefix}.ln_2.weight", dense_block.ln_2.weight, distributed_block.ln_2.weight, atol, rtol
+        )
+        _append_replicated_parameter_pair_with_tolerance(
+            checks, rank, f"{prefix}.ln_2.bias", dense_block.ln_2.bias, distributed_block.ln_2.bias, atol, rtol
+        )
+        if dense_block.attn.proj.bias is not None and distributed_block.attn.proj.bias is not None:
+            _append_replicated_parameter_pair_with_tolerance(
+                checks,
+                rank,
+                f"{prefix}.attn.proj.bias",
+                dense_block.attn.proj.bias,
+                distributed_block.attn.proj.bias,
+                atol,
+                rtol,
+            )
+        dense_fc2 = dense_block.mlp.net[2]
+        if dense_fc2.bias is not None and distributed_block.fc2.bias is not None:
+            _append_replicated_parameter_pair_with_tolerance(
+                checks,
+                rank,
+                f"{prefix}.mlp.fc2.bias",
+                dense_fc2.bias,
+                distributed_block.fc2.bias,
+                atol,
+                rtol,
+            )
+
+    _append_replicated_parameter_pair_with_tolerance(
+        checks, rank, "ln_f.weight", dense.ln_f.weight, distributed.ln_f.weight, atol, rtol
+    )
+    _append_replicated_parameter_pair_with_tolerance(
+        checks, rank, "ln_f.bias", dense.ln_f.bias, distributed.ln_f.bias, atol, rtol
+    )
+
+
+def _append_replicated_parameter_pair_with_tolerance(
+    checks: list[dict[str, object]],
+    rank: int,
+    name: str,
+    dense_parameter: torch.nn.Parameter,
+    distributed_parameter: torch.nn.Parameter,
+    atol: float,
+    rtol: float,
+) -> None:
+    checks.append(
+        _make_tensor_check_with_tolerance(
+            rank,
+            name,
+            "optimizer_replicated",
+            dense_parameter,
+            distributed_parameter,
+            atol=atol,
+            rtol=rtol,
+        )
+    )
+
+
+def _make_tensor_check_with_tolerance(
+    rank: int,
+    name: str,
+    category: str,
+    expected: torch.Tensor,
+    actual: torch.Tensor,
+    atol: float,
+    rtol: float,
+) -> dict[str, object]:
+    expected = expected.detach()
+    actual = actual.detach()
+    expected_shape = tuple(expected.shape)
+    actual_shape = tuple(actual.shape)
+    shape_matches = expected_shape == actual_shape
+    finite = bool(torch.isfinite(expected).all() and torch.isfinite(actual).all())
+    if shape_matches:
+        max_abs_error = float((expected - actual).abs().max().item()) if expected.numel() > 0 else 0.0
+        close = bool(torch.allclose(actual, expected, atol=atol, rtol=rtol))
+    else:
+        max_abs_error = None
+        close = False
+    detail = ""
+    if atol != _ATOL or rtol != _RTOL:
+        detail = f"atol={atol}, rtol={rtol}"
+    return {
+        "rank": rank,
+        "name": name,
+        "category": category,
+        "passed": bool(shape_matches and finite and close),
+        "shape_matches": shape_matches,
+        "finite": finite,
+        "close": close,
+        "expected_shape": expected_shape,
+        "actual_shape": actual_shape,
+        "max_abs_error": max_abs_error,
+        "expected_norm": float(expected.norm().item()) if expected.numel() > 0 else 0.0,
+        "actual_norm": float(actual.norm().item()) if actual.numel() > 0 else 0.0,
+        "detail": detail,
+    }
 
 
 def _add_sharded_optimizer_state_checks(
@@ -736,6 +1018,10 @@ def _print_report(
     if result["optimizer"] == "adamw":
         print(f"AdamW betas: {result['betas']}")
         print(f"AdamW eps: {result['eps']}")
+        print(
+            "AdamW updated parameter tolerance: "
+            f"atol={result['adamw_parameter_atol']}, rtol={result['adamw_parameter_rtol']}"
+        )
     print(f"tolerance: atol={result['atol']}, rtol={result['rtol']}")
     print()
     print("Training checks")
@@ -772,6 +1058,7 @@ def _print_report(
     print("  This runs a short optimizer loop and compares every step with dense GPT slices.")
     print("  Each step checks logits, loss, gradient shards, replicated gradients, and updated shards.")
     print("  With --optimizer adamw, it also checks exp_avg, exp_avg_sq, and step state shards.")
+    print("  AdamW updated parameters use a separate explicit tolerance for adaptive-update sensitivity.")
     print("  Replicated gradients are synchronized explicitly before each local optimizer step.")
     print("  Dropout is disabled in the presets; CUDA RNG tracking is not claimed here.")
     print("  This is an isolated CUDA/NCCL prototype validation path.")
