@@ -79,8 +79,13 @@ python examples/compare_distributed_attention.py --spawn 2
 python examples/compare_distributed_transformer_block.py --spawn 2
 python examples/compare_distributed_gpt_forward.py --spawn 2
 python examples/train_distributed_gpt_smoke.py --spawn 2
-torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py
+torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small
+torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py --preset small
 ```
+
+For the current distributed tensor-parallel prototype validation matrix and
+known boundaries, see
+[`docs/distributed_tp_status.md`](docs/distributed_tp_status.md).
 
 ## v0.2 Fake Tensor Parallelism
 
@@ -355,6 +360,9 @@ or speedup claims.
 
 ## v0.10 Direction
 
+The current validation matrix for the isolated distributed TP prototype is
+summarized in [`docs/distributed_tp_status.md`](docs/distributed_tp_status.md).
+
 - `compare_distributed_attention.py --spawn 2` demonstrates an isolated
   CPU/Gloo distributed causal attention prototype. It uses
   `DistributedQKVParallelLinear` for local Q/K/V head slicing and
@@ -383,16 +391,15 @@ or speedup claims.
   separate from `GPTModel` and `Trainer`, and it does not claim convergence,
   speedup, or full Megatron-style training semantics.
 - `torchrun --standalone --nproc_per_node=4
-  examples/compare_distributed_gpt_nccl.py` runs a tiny CUDA/NCCL smoke
+  examples/compare_distributed_gpt_nccl.py --preset small` runs a small CUDA/NCCL smoke
   comparison over the same isolated distributed GPT prototype. It checks
   forward equivalence against a dense GPT, loss backward, explicit replicated
   gradient synchronization, one local optimizer step, and activation
   checkpoint backward plumbing. Strict validation is enabled by default, so
   any failed closeness, finiteness, optimizer, or checkpoint smoke check exits
-  nonzero. Use `--preset small` for a slightly wider 4-GPU smoke shape. This is
-  for single-node GPU/NCCL validation of the prototype path only; the main
-  `GPTModel` path is not wired to real distributed TP, and there are no
-  multi-node orchestration or speedup claims.
+  nonzero. This is for single-node GPU/NCCL validation of the prototype path
+  only; the main `GPTModel` path is not wired to real distributed TP, and there
+  are no multi-node orchestration or speedup claims.
 - `torchrun --standalone --nproc_per_node=4
   examples/compare_distributed_gpt_gradients_nccl.py --preset small` runs a
   stricter CUDA/NCCL gradient-slice and one-step optimizer comparison. It

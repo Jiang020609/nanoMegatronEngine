@@ -1,0 +1,98 @@
+# Distributed Tensor Parallel Prototype Status
+
+This document summarizes the current v0.10 distributed tensor-parallel
+prototype status. The implementation is a lightweight rewrite of the relevant
+Megatron-style tensor-parallel mechanics for learning and validation; it is not
+vendored Megatron-LM code and does not claim Megatron-LM feature or performance
+parity.
+
+## Scope
+
+The distributed path is an isolated prototype built from rank-local modules:
+
+- `DistributedColumnParallelLinear`
+- `DistributedRowParallelLinear`
+- `DistributedQKVParallelLinear`
+- `VocabParallelEmbedding` with `DistributedRankLocalCollectives`
+- `VocabParallelLMHead` with `DistributedRankLocalCollectives`
+- `DistributedCausalSelfAttention`
+- `DistributedTransformerBlock`
+- `DistributedGPTModel`
+
+The main `GPTModel` and trainer path are still unchanged. Fake tensor
+parallel behavior remains separate and unchanged.
+
+## Validation Matrix
+
+| Path | Command | What It Checks | Status |
+| --- | --- | --- | --- |
+| Default tests | `pytest` | Dense path, fake TP path, non-distributed tests, skipped distributed tests by default | Passing locally |
+| CPU/Gloo distributed modules | `NME_RUN_DISTRIBUTED_TESTS=1 pytest tests/test_distributed_collectives.py tests/test_distributed_column_parallel_linear.py tests/test_distributed_row_parallel_linear.py tests/test_distributed_vocab_parallel.py tests/test_distributed_mlp_composition.py tests/test_distributed_qkv_parallel_linear.py tests/test_distributed_attention.py tests/test_distributed_transformer_block.py tests/test_distributed_gpt_forward.py` | Rank-local collectives, distributed linear/vocab/QKV/attention/block/GPT forward and backward smoke checks | Passing locally |
+| CPU/Gloo MLP composition | `python examples/compare_distributed_mlp.py --spawn 2` | Dense MLP vs distributed column-local GELU plus row-parallel MLP, including input gradients | Passing locally |
+| CUDA/NCCL GPT smoke | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small` | Dense vs distributed GPT forward/loss, backward smoke, replicated gradient sync, local SGD step smoke, activation checkpoint backward smoke | Passed on 4-GPU A800 |
+| CUDA/NCCL GPT gradient and optimizer equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py --preset small` | Dense gradients vs local distributed gradient shards, replicated gradients after explicit sync, and one SGD-updated dense parameter slice vs local distributed shard | Passed on 4-GPU A800: 236/236 checks, max abs error around `1.8e-7` |
+
+## Current Guarantees
+
+For the isolated distributed GPT prototype, the validated `--preset small`
+CUDA/NCCL path checks:
+
+- full logits match dense GPT within tolerance
+- loss matches dense GPT within tolerance
+- QKV local head gradient shards match dense Q/K/V head slices
+- row-parallel projection and MLP gradient shards match dense column slices
+- column-parallel MLP gradient shards match dense row slices
+- tied vocab embedding/LM-head gradient shards match dense vocab slices
+- replicated parameter gradients match dense after explicit replicated-gradient
+  synchronization
+- one SGD step updates local distributed shards to match the corresponding
+  dense parameter slices
+
+## Important Non-Goals
+
+The current prototype does not implement or claim:
+
+- wiring into the main `GPTModel` path
+- a full distributed training engine
+- Megatron-LM feature parity
+- dropout RNG tracking across tensor-parallel ranks
+- AdamW or distributed optimizer equivalence
+- mixed precision, FP8, or custom CUDA kernels
+- sequence parallelism
+- pipeline parallelism
+- data parallelism or ZeRO-style optimizer sharding
+- multi-node orchestration
+- benchmarked speedups or throughput claims
+
+## Useful Commands
+
+Run default tests:
+
+```bash
+pytest
+```
+
+Run opt-in CPU/Gloo distributed tests:
+
+```bash
+NME_RUN_DISTRIBUTED_TESTS=1 pytest \
+  tests/test_distributed_collectives.py \
+  tests/test_distributed_column_parallel_linear.py \
+  tests/test_distributed_row_parallel_linear.py \
+  tests/test_distributed_vocab_parallel.py \
+  tests/test_distributed_mlp_composition.py \
+  tests/test_distributed_qkv_parallel_linear.py \
+  tests/test_distributed_attention.py \
+  tests/test_distributed_transformer_block.py \
+  tests/test_distributed_gpt_forward.py
+```
+
+Run the CUDA/NCCL strict gradient and optimizer equivalence check:
+
+```bash
+torchrun --standalone --nproc_per_node=4 \
+  examples/compare_distributed_gpt_gradients_nccl.py --preset small
+```
+
+The CUDA/NCCL commands are single-node prototype validations only. They should
+not be read as multi-node, production-training, or speedup claims.
