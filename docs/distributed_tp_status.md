@@ -32,7 +32,7 @@ parallel behavior remains separate and unchanged.
 | CUDA/NCCL GPT smoke | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small` | Dense vs distributed GPT forward/loss, backward smoke, replicated gradient sync, local SGD step smoke, activation checkpoint backward smoke | Passed on 4-GPU A800 |
 | CUDA/NCCL GPT gradient and optimizer equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py --preset small` | Dense gradients vs local distributed gradient shards, replicated gradients after explicit sync, and one SGD-updated dense parameter slice vs local distributed shard | Passed on 4-GPU A800: 236/236 checks, max abs error around `1.8e-7` |
 | CUDA/NCCL GPT multi-step training equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5` | A short deterministic SGD loop comparing logits, loss, gradient shards, replicated gradients, and updated parameter shards after every step | Passed on 4-GPU A800: 1240/1240 checks, max abs error around `4.8e-7` |
-| CUDA/NCCL GPT AdamW state equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 --optimizer adamw --weight-decay 0.01 --adamw-parameter-atol 1e-4` | A short deterministic AdamW loop comparing logits, loss, gradient shards, replicated gradients, updated parameter shards, and AdamW `step`/`exp_avg`/`exp_avg_sq` state shards after every step. AdamW updated parameter checks use explicit `atol=1e-4`; state/gradient/logit/loss checks use the base tolerance. | Ready for 4-GPU A800 validation |
+| CUDA/NCCL GPT AdamW state equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 --optimizer adamw --weight-decay 0.01 --adamw-parameter-atol 1e-4` | A short deterministic AdamW loop comparing logits, loss, gradient shards, replicated gradients, updated parameter shards, and AdamW `step`/`exp_avg`/`exp_avg_sq` state shards after every step. AdamW updated parameter checks use explicit `atol=1e-4`; state/gradient/logit/loss checks use the base tolerance. | Passed on 4-GPU A800: 2920/2920 checks, max abs error around `6.5e-5` |
 
 ## Current Guarantees
 
@@ -67,9 +67,9 @@ GPT instances alive across multiple deterministic steps. Each step checks
 logits, loss, sharded gradients, replicated gradients after explicit
 synchronization, and updated parameter shards.
 
-## Next Strict A800 Check
+## Latest AdamW A800 Check
 
-The next stricter validation target is AdamW optimizer-state equivalence:
+The latest stricter AdamW optimizer-state equivalence target is:
 
 ```bash
 torchrun --standalone --nproc_per_node=4 \
@@ -83,8 +83,8 @@ replicated parameters against the corresponding dense parameter or dense tensor
 slice. AdamW updated parameter checks use an explicit `atol=1e-4` because the
 adaptive update can amplify tiny dense-vs-distributed numerical differences in
 bias terms; optimizer state, gradients, logits, and losses still use the base
-tolerance. The status should only be changed from ready to passed after this
-strict command completes on the A800 environment.
+tolerance. This completed on a 4-GPU A800 environment with 2920/2920 checks
+passing and maximum absolute error around `6.5e-5`.
 
 ## Important Non-Goals
 
