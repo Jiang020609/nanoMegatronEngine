@@ -82,8 +82,11 @@ python examples/compare_distributed_transformer_block.py --spawn 2
 python examples/compare_distributed_gpt_forward.py --spawn 2
 python examples/train_distributed_gpt_smoke.py --spawn 2
 torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small
+torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small --no-bias
 torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py --preset small
+torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py --preset small --no-bias
 torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5
+torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 --no-bias
 torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 --optimizer adamw --weight-decay 0.01 --adamw-parameter-atol 1e-4
 ```
 

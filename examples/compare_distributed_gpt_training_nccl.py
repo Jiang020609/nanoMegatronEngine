@@ -45,6 +45,11 @@ def main() -> None:
         help="model shape preset; small is the intended 4-GPU A800 validation shape",
     )
     parser.add_argument("--seed", type=int, default=13301, help="deterministic seed for model initialization")
+    parser.add_argument(
+        "--no-bias",
+        action="store_true",
+        help="disable attention and MLP projection biases in dense and distributed GPT",
+    )
     parser.add_argument("--steps", type=int, default=5, help="number of deterministic training steps to compare")
     parser.add_argument(
         "--optimizer",
@@ -100,6 +105,10 @@ def main() -> None:
             "examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 "
             "--optimizer adamw --weight-decay 0.01 --adamw-parameter-atol 1e-4"
         )
+        print(
+            "  torchrun --standalone --nproc_per_node=4 "
+            "examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 --no-bias"
+        )
         print("Strict validation is enabled by default; use --no-strict to print without failing.")
         print("This compares a short optimizer loop against dense GPT slices after every step.")
         print("The main GPTModel path is not wired to real distributed TP.")
@@ -131,7 +140,8 @@ def _run_demo(args: argparse.Namespace) -> None:
         rank = get_rank()
         world_size = get_world_size()
         backend = get_backend()
-        dense_config = _dense_config(args.preset)
+        use_bias = not args.no_bias
+        dense_config = _dense_config(args.preset, bias=use_bias)
         if dense_config.n_head % world_size != 0 or dense_config.vocab_size % world_size != 0:
             raise ValueError(
                 "this CUDA/NCCL training equivalence demo expects world_size to divide "
@@ -144,6 +154,7 @@ def _run_demo(args: argparse.Namespace) -> None:
             device,
             preset=args.preset,
             seed=args.seed,
+            bias=use_bias,
             steps=args.steps,
             optimizer_name=args.optimizer,
             learning_rate=args.lr,
@@ -175,6 +186,7 @@ def _compare_training_equivalence(
     device: torch.device,
     preset: str,
     seed: int,
+    bias: bool,
     steps: int,
     optimizer_name: str,
     learning_rate: float,
@@ -200,8 +212,8 @@ def _compare_training_equivalence(
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-    dense_config = _dense_config(preset)
-    distributed_config = _distributed_config(world_size, preset)
+    dense_config = _dense_config(preset, bias=bias)
+    distributed_config = _distributed_config(world_size, preset, bias=bias)
     dense = GPTModel(dense_config).to(device)
     dense.train()
     distributed = DistributedGPTModel(distributed_config).to(device)
@@ -337,6 +349,7 @@ def _compare_training_equivalence(
         "n_layer": dense_config.n_layer,
         "n_head": dense_config.n_head,
         "n_embd": dense_config.n_embd,
+        "bias": dense_config.bias,
         "batch_shape": tuple(first_input_ids.shape),
         "steps": steps,
         "optimizer": optimizer_name,
@@ -1010,6 +1023,7 @@ def _print_report(
     print(f"n_layer: {result['n_layer']}")
     print(f"n_head: {result['n_head']}")
     print(f"n_embd: {result['n_embd']}")
+    print(f"bias: {result['bias']}")
     print(f"batch shape: {result['batch_shape']}")
     print(f"training steps: {result['steps']}")
     print(f"optimizer: {result['optimizer']}")

@@ -30,6 +30,11 @@ def main() -> None:
         help="model shape preset; small is still a smoke test but exercises wider tensors",
     )
     parser.add_argument("--seed", type=int, default=13201, help="deterministic seed for model initialization")
+    parser.add_argument(
+        "--no-bias",
+        action="store_true",
+        help="disable attention and MLP projection biases in dense and distributed GPT",
+    )
     parser.add_argument("--lr", type=float, default=1e-3, help="SGD learning rate for the one-step update check")
     parser.add_argument("--max-report", type=int, default=24, help="maximum failed/largest-error checks to print")
     parser.add_argument(
@@ -48,6 +53,10 @@ def main() -> None:
         print(
             "  torchrun --standalone --nproc_per_node=4 "
             "examples/compare_distributed_gpt_gradients_nccl.py --preset small"
+        )
+        print(
+            "  torchrun --standalone --nproc_per_node=4 "
+            "examples/compare_distributed_gpt_gradients_nccl.py --preset small --no-bias"
         )
         print("Strict validation is enabled by default; use --no-strict to print without failing.")
         print("This compares local distributed gradient shards and one SGD update with dense GPT slices.")
@@ -80,7 +89,8 @@ def _run_demo(args: argparse.Namespace) -> None:
         rank = get_rank()
         world_size = get_world_size()
         backend = get_backend()
-        dense_config = _dense_config(args.preset)
+        use_bias = not args.no_bias
+        dense_config = _dense_config(args.preset, bias=use_bias)
         if dense_config.n_head % world_size != 0 or dense_config.vocab_size % world_size != 0:
             raise ValueError(
                 "this CUDA/NCCL gradient equivalence demo expects world_size to divide "
@@ -94,6 +104,7 @@ def _run_demo(args: argparse.Namespace) -> None:
             preset=args.preset,
             seed=args.seed,
             learning_rate=args.lr,
+            bias=use_bias,
         )
         torch.cuda.synchronize(device)
 
@@ -118,6 +129,7 @@ def _compare_gradient_equivalence(
     preset: str,
     seed: int,
     learning_rate: float,
+    bias: bool,
 ) -> dict[str, object]:
     if learning_rate <= 0.0:
         raise ValueError(f"learning_rate must be positive, got {learning_rate}")
@@ -125,8 +137,8 @@ def _compare_gradient_equivalence(
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-    dense_config = _dense_config(preset)
-    distributed_config = _distributed_config(world_size, preset)
+    dense_config = _dense_config(preset, bias=bias)
+    distributed_config = _distributed_config(world_size, preset, bias=bias)
     dense = GPTModel(dense_config).to(device)
     dense.eval()
     distributed = DistributedGPTModel(distributed_config).to(device)
@@ -185,6 +197,7 @@ def _compare_gradient_equivalence(
         "n_layer": dense_config.n_layer,
         "n_head": dense_config.n_head,
         "n_embd": dense_config.n_embd,
+        "bias": dense_config.bias,
         "batch_shape": tuple(input_ids.shape),
         "learning_rate": learning_rate,
         "atol": _ATOL,
@@ -585,7 +598,7 @@ def _gather_checks(local_checks: list[dict[str, object]]) -> list[dict[str, obje
     return [check for rank_checks in gathered if rank_checks is not None for check in rank_checks]
 
 
-def _dense_config(preset: str) -> GPTConfig:
+def _dense_config(preset: str, bias: bool = True) -> GPTConfig:
     if preset == "small":
         return GPTConfig(
             vocab_size=128,
@@ -593,6 +606,7 @@ def _dense_config(preset: str) -> GPTConfig:
             n_layer=2,
             n_head=8,
             n_embd=64,
+            bias=bias,
             dropout=0.0,
             tensor_parallel_size=1,
         )
@@ -604,19 +618,21 @@ def _dense_config(preset: str) -> GPTConfig:
         n_layer=2,
         n_head=4,
         n_embd=8,
+        bias=bias,
         dropout=0.0,
         tensor_parallel_size=1,
     )
 
 
-def _distributed_config(world_size: int, preset: str) -> GPTConfig:
-    config = _dense_config(preset)
+def _distributed_config(world_size: int, preset: str, bias: bool = True) -> GPTConfig:
+    config = _dense_config(preset, bias=bias)
     return GPTConfig(
         vocab_size=config.vocab_size,
         block_size=config.block_size,
         n_layer=config.n_layer,
         n_head=config.n_head,
         n_embd=config.n_embd,
+        bias=config.bias,
         dropout=0.0,
         tensor_parallel_size=world_size,
     )
@@ -654,6 +670,7 @@ def _print_report(
     print(f"n_layer: {result['n_layer']}")
     print(f"n_head: {result['n_head']}")
     print(f"n_embd: {result['n_embd']}")
+    print(f"bias: {result['bias']}")
     print(f"batch shape: {result['batch_shape']}")
     print(f"SGD learning rate: {result['learning_rate']}")
     print(f"tolerance: atol={result['atol']}, rtol={result['rtol']}")

@@ -53,11 +53,12 @@ Implemented so far:
 - CPU/Gloo rank-local vs replicated dropout RNG stream checks
 - GPT projection bias configuration
 - CPU/Gloo no-bias distributed GPT forward/loss validation
+- CUDA/NCCL diagnostic switches for no-bias smoke, gradient, and training runs
 
 Next targets:
 
 - optional explicit factory for distributed GPT construction
-- no-bias CUDA/NCCL gradient and training diagnostics
+- A800 no-bias CUDA/NCCL gradient and training validation
 
 ### A2. Data Parallelism
 
@@ -188,7 +189,7 @@ meet.
 ## Recommended Near-Term Order
 
 1. Add an optional explicit factory for distributed GPT construction.
-2. Add no-bias CUDA/NCCL gradient and training diagnostics.
+2. Run and record A800 no-bias CUDA/NCCL gradient and training validation.
 3. Add dropout-on dense-vs-distributed diagnostics using the tracked streams.
 4. Start RL core utilities with log-probs, masks, GAE, and PPO losses.
 5. Add a dense tiny PPO example.

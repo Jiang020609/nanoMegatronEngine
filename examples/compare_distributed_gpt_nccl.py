@@ -25,6 +25,11 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=13101, help="deterministic seed for model initialization")
     parser.add_argument(
+        "--no-bias",
+        action="store_true",
+        help="disable attention and MLP projection biases in dense and distributed GPT",
+    )
+    parser.add_argument(
         "--no-strict",
         dest="strict",
         action="store_false",
@@ -39,6 +44,7 @@ def main() -> None:
         print("  torchrun --standalone --nproc_per_node=2 examples/compare_distributed_gpt_nccl.py")
         print("  torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py")
         print("  torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small")
+        print("  torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small --no-bias")
         print("This is an isolated distributed GPT prototype smoke path.")
         print("Strict validation is enabled by default; use --no-strict to print without failing.")
         print("The main GPTModel path is not wired to real distributed TP.")
@@ -70,7 +76,8 @@ def _run_demo(args: argparse.Namespace) -> None:
         rank = get_rank()
         world_size = get_world_size()
         backend = get_backend()
-        dense_config = _dense_config(args.preset)
+        use_bias = not args.no_bias
+        dense_config = _dense_config(args.preset, bias=use_bias)
         if dense_config.n_head % world_size != 0 or dense_config.vocab_size % world_size != 0:
             raise ValueError(
                 "this CUDA/NCCL demo expects world_size to divide "
@@ -78,7 +85,7 @@ def _run_demo(args: argparse.Namespace) -> None:
                 "try --nproc_per_node=2 or --nproc_per_node=4 with the default presets"
             )
 
-        result = _compare_gpt_forward(world_size, device, preset=args.preset, seed=args.seed)
+        result = _compare_gpt_forward(world_size, device, preset=args.preset, seed=args.seed, bias=use_bias)
         torch.cuda.synchronize(device)
 
         if rank == 0:
@@ -95,6 +102,7 @@ def _run_demo(args: argparse.Namespace) -> None:
             print(f"n_layer: {result['n_layer']}")
             print(f"n_head: {result['n_head']}")
             print(f"n_embd: {result['n_embd']}")
+            print(f"bias: {result['bias']}")
             print()
             print("Local shard summaries")
             for summary in result["shard_summaries"]:
@@ -149,13 +157,14 @@ def _compare_gpt_forward(
     device: torch.device,
     preset: str,
     seed: int,
+    bias: bool,
 ) -> dict[str, object]:
     _make_cuda_math_deterministic_enough()
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-    dense_config = _dense_config(preset)
-    distributed_config = _distributed_config(world_size, preset)
+    dense_config = _dense_config(preset, bias=bias)
+    distributed_config = _distributed_config(world_size, preset, bias=bias)
     dense = GPTModel(dense_config).to(device)
     dense.eval()
     distributed = DistributedGPTModel(distributed_config).to(device)
@@ -190,6 +199,7 @@ def _compare_gpt_forward(
         device,
         preset=preset,
         seed=seed + 1,
+        bias=bias,
     )
 
     logits_close = _outputs_close(dense_logits, distributed_logits)
@@ -203,6 +213,7 @@ def _compare_gpt_forward(
         "n_layer": dense_config.n_layer,
         "n_head": dense_config.n_head,
         "n_embd": dense_config.n_embd,
+        "bias": dense_config.bias,
         "shard_summaries": shard_summaries,
         "dense_shape": dense_logits.shape,
         "distributed_shape": distributed_logits.shape,
@@ -220,7 +231,7 @@ def _compare_gpt_forward(
     }
 
 
-def _dense_config(preset: str) -> GPTConfig:
+def _dense_config(preset: str, bias: bool = True) -> GPTConfig:
     if preset == "small":
         return GPTConfig(
             vocab_size=128,
@@ -228,6 +239,7 @@ def _dense_config(preset: str) -> GPTConfig:
             n_layer=2,
             n_head=8,
             n_embd=64,
+            bias=bias,
             dropout=0.0,
             tensor_parallel_size=1,
         )
@@ -239,32 +251,35 @@ def _dense_config(preset: str) -> GPTConfig:
         n_layer=2,
         n_head=4,
         n_embd=8,
+        bias=bias,
         dropout=0.0,
         tensor_parallel_size=1,
     )
 
 
-def _distributed_config(world_size: int, preset: str) -> GPTConfig:
-    config = _dense_config(preset)
+def _distributed_config(world_size: int, preset: str, bias: bool = True) -> GPTConfig:
+    config = _dense_config(preset, bias=bias)
     return GPTConfig(
         vocab_size=config.vocab_size,
         block_size=config.block_size,
         n_layer=config.n_layer,
         n_head=config.n_head,
         n_embd=config.n_embd,
+        bias=config.bias,
         dropout=0.0,
         tensor_parallel_size=world_size,
     )
 
 
-def _distributed_checkpoint_config(world_size: int, preset: str) -> GPTConfig:
-    config = _dense_config(preset)
+def _distributed_checkpoint_config(world_size: int, preset: str, bias: bool = True) -> GPTConfig:
+    config = _dense_config(preset, bias=bias)
     return GPTConfig(
         vocab_size=config.vocab_size,
         block_size=config.block_size,
         n_layer=config.n_layer,
         n_head=config.n_head,
         n_embd=config.n_embd,
+        bias=config.bias,
         dropout=0.0,
         use_activation_checkpointing=True,
         tensor_parallel_size=world_size,
@@ -310,10 +325,11 @@ def _run_activation_checkpointing_smoke(
     device: torch.device,
     preset: str,
     seed: int,
+    bias: bool,
 ) -> dict[str, object]:
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    model = DistributedGPTModel(_distributed_checkpoint_config(world_size, preset)).to(device)
+    model = DistributedGPTModel(_distributed_checkpoint_config(world_size, preset, bias=bias)).to(device)
     model.train()
     _, loss = model(input_ids, targets)
     if loss is None or not torch.isfinite(loss):

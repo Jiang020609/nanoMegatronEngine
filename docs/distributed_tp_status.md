@@ -57,6 +57,11 @@ default projection-bias configuration and `bias=False` for attention and MLP
 projection linears. LayerNorm bias and the tied LM head behavior remain
 unchanged.
 
+The CUDA/NCCL smoke, gradient-equivalence, and multi-step training diagnostic
+scripts accept `--no-bias` to run the same isolated distributed GPT prototype
+checks with attention and MLP projection biases disabled. These no-bias CUDA
+diagnostics still need an A800 validation run before they are listed as passed.
+
 ## Foundational RNG Work
 
 `RNGStateTracker` provides process-local named CPU/CUDA RNG state capture,
@@ -115,7 +120,7 @@ The current prototype does not implement or claim:
 - a full distributed training engine
 - Megatron-LM feature parity
 - dropout-on dense-equivalent distributed training
-- no-bias CUDA/NCCL gradient or training equivalence
+- A800-validated no-bias CUDA/NCCL gradient or training equivalence
 - a production distributed optimizer
 - mixed precision, FP8, or custom CUDA kernels
 - sequence parallelism
@@ -155,11 +160,25 @@ torchrun --standalone --nproc_per_node=4 \
   examples/compare_distributed_gpt_gradients_nccl.py --preset small
 ```
 
+Run the pending no-bias CUDA/NCCL gradient and optimizer equivalence check:
+
+```bash
+torchrun --standalone --nproc_per_node=4 \
+  examples/compare_distributed_gpt_gradients_nccl.py --preset small --no-bias
+```
+
 Run the CUDA/NCCL multi-step training equivalence check:
 
 ```bash
 torchrun --standalone --nproc_per_node=4 \
   examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5
+```
+
+Run the pending no-bias CUDA/NCCL multi-step training equivalence check:
+
+```bash
+torchrun --standalone --nproc_per_node=4 \
+  examples/compare_distributed_gpt_training_nccl.py --preset small --steps 5 --no-bias
 ```
 
 Run the CUDA/NCCL AdamW optimizer-state equivalence check:
