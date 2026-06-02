@@ -32,6 +32,7 @@ from nano_megatron_engine.parallel.fake_tp import (
     validate_divisible,
 )
 from nano_megatron_engine.parallel.row_parallel_linear import RowParallelLinear
+from nano_megatron_engine.parallel.rng import RNGState, RNGStateTracker, capture_rng_state, restore_rng_state
 from nano_megatron_engine.parallel.vocab_parallel_embedding import VocabParallelEmbedding
 from nano_megatron_engine.parallel.vocab_parallel_lm_head import VocabParallelLMHead
 
@@ -44,6 +45,8 @@ __all__ = [
     "FakeShardListCollectives",
     "RankLocalCollectiveProtocol",
     "RowParallelLinear",
+    "RNGState",
+    "RNGStateTracker",
     "ShardListCollectiveProtocol",
     "VocabParallelEmbedding",
     "VocabParallelLMHead",
@@ -53,6 +56,7 @@ __all__ = [
     "fake_all_gather",
     "fake_all_reduce_sum",
     "fake_reduce_scatter_sum",
+    "capture_rng_state",
     "get_backend",
     "get_expected_device_type",
     "get_rank",
@@ -61,6 +65,7 @@ __all__ = [
     "is_distributed_available",
     "is_distributed_initialized",
     "partition_range",
+    "restore_rng_state",
     "split_tensor_along_dim",
     "validate_rank_local_tensor_device",
     "validate_divisible",

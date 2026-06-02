@@ -52,6 +52,13 @@ CUDA/NCCL path checks:
 - a 5-step deterministic SGD loop keeps logits, losses, gradient shards,
   replicated gradients, and updated parameter shards aligned with dense slices
 
+## Foundational RNG Work
+
+`RNGStateTracker` provides process-local named CPU/CUDA RNG state capture,
+restore, and fork semantics. This is intended as the foundation for later
+dropout and activation-checkpointing determinism checks. It is not yet wired
+into tensor-parallel dropout semantics.
+
 ## Latest Strict A800 Check
 
 The latest stricter validation target is a multi-step SGD equivalence run:
@@ -93,7 +100,7 @@ The current prototype does not implement or claim:
 - wiring into the main `GPTModel` path
 - a full distributed training engine
 - Megatron-LM feature parity
-- dropout RNG tracking across tensor-parallel ranks
+- dropout RNG tracking integrated across tensor-parallel ranks
 - a production distributed optimizer
 - mixed precision, FP8, or custom CUDA kernels
 - sequence parallelism

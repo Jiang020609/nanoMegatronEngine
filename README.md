@@ -45,6 +45,7 @@ the training mechanics explicit.
 | Distributed collectives | Optional CPU/Gloo wrappers and experimental CUDA/NCCL rank-local wrappers in `distributed_collectives.py` | Not wired into the main GPT path; normal pytest does not require distributed setup |
 | Distributed module prototypes | CPU/Gloo modules plus an experimental CUDA/NCCL smoke path for the isolated distributed GPT prototype | Prototype-only; main `GPTModel` is still unchanged |
 | Collective adapters | Explicit fake shard-list and distributed rank-local adapter boundaries | They document semantics; they do not make the APIs interchangeable |
+| RNG utilities | Process-local named CPU/CUDA RNG state tracker for upcoming dropout and checkpointing experiments | Not yet wired into tensor-parallel dropout semantics |
 | Accelerators | CUDA is optional for benchmarks and the NCCL smoke example | No custom CUDA, FP8, multi-node orchestration, or GPU requirement for default tests |
 | Performance claims | None | No Megatron-LM parity or speedup claims |
 
@@ -88,6 +89,8 @@ torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_traini
 For the current distributed tensor-parallel prototype validation matrix and
 known boundaries, see
 [`docs/distributed_tp_status.md`](docs/distributed_tp_status.md).
+For the longer-term Megatron-style parallelism and RL infrastructure plan, see
+[`docs/roadmap.md`](docs/roadmap.md).
 
 ## v0.2 Fake Tensor Parallelism
 
