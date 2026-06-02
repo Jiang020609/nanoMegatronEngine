@@ -18,6 +18,7 @@ class GPTConfig:
     n_layer: int = 2
     n_head: int = 2
     n_embd: int = 64
+    bias: bool = True
     dropout: float = 0.0
     use_activation_checkpointing: bool = False
     tensor_parallel_size: int = 1
@@ -35,6 +36,8 @@ class GPTConfig:
             raise ValueError("n_embd must be positive")
         if self.n_embd % self.n_head != 0:
             raise ValueError("n_embd must be divisible by n_head")
+        if not isinstance(self.bias, bool):
+            raise TypeError(f"bias must be bool, got {type(self.bias).__name__}")
         if not 0.0 <= self.dropout < 1.0:
             raise ValueError("dropout must be in [0.0, 1.0)")
         if self.tensor_parallel_size < 1:

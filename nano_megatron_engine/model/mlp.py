@@ -17,9 +17,9 @@ class MLP(nn.Module):
         hidden_dim = config.mlp_hidden_size
         if config.tensor_parallel_size == 1:
             self.net = nn.Sequential(
-                nn.Linear(config.n_embd, hidden_dim),
+                nn.Linear(config.n_embd, hidden_dim, bias=config.bias),
                 nn.GELU(),
-                nn.Linear(hidden_dim, config.n_embd),
+                nn.Linear(hidden_dim, config.n_embd, bias=config.bias),
                 nn.Dropout(config.dropout),
             )
         else:
@@ -30,10 +30,16 @@ class MLP(nn.Module):
                     config.n_embd,
                     hidden_dim,
                     tp_size=config.tensor_parallel_size,
+                    bias=config.bias,
                     gather_output=True,
                 ),
                 nn.GELU(),
-                RowParallelLinear(hidden_dim, config.n_embd, tp_size=config.tensor_parallel_size),
+                RowParallelLinear(
+                    hidden_dim,
+                    config.n_embd,
+                    tp_size=config.tensor_parallel_size,
+                    bias=config.bias,
+                ),
                 nn.Dropout(config.dropout),
             )
 

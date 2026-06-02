@@ -118,8 +118,9 @@ class GPTModel(nn.Module):
             if hasattr(module, "qkv_weight_shards"):
                 for weight in module.qkv_weight_shards:
                     nn.init.normal_(weight, mean=0.0, std=0.02)
-                for bias in module.qkv_bias_shards:
-                    nn.init.zeros_(bias)
+                if module.qkv_bias_shards is not None:
+                    for bias in module.qkv_bias_shards:
+                        nn.init.zeros_(bias)
         elif isinstance(module, VocabParallelEmbedding):
             for weight in module.weight_shards:
                 nn.init.normal_(weight, mean=0.0, std=0.02)

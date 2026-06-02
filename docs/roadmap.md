@@ -51,12 +51,13 @@ Implemented so far:
 - activation checkpointing plus dropout replay test under a tracked RNG stream
 - optional tracked dropout in isolated distributed prototypes
 - CPU/Gloo rank-local vs replicated dropout RNG stream checks
+- GPT projection bias configuration
+- CPU/Gloo no-bias distributed GPT forward/loss validation
 
 Next targets:
 
-- bias/no-bias GPT configuration support
-- no-bias distributed GPT validation
 - optional explicit factory for distributed GPT construction
+- no-bias CUDA/NCCL gradient and training diagnostics
 
 ### A2. Data Parallelism
 
@@ -186,11 +187,11 @@ meet.
 
 ## Recommended Near-Term Order
 
-1. Add `bias` configuration support and no-bias validation.
-2. Add dropout-on dense-vs-distributed diagnostics using the tracked streams.
-3. Start RL core utilities with log-probs, masks, GAE, and PPO losses.
-4. Add a dense tiny PPO example.
-5. Add DP/PP/SP learning prototypes once TP validation is stable.
+1. Add an optional explicit factory for distributed GPT construction.
+2. Add no-bias CUDA/NCCL gradient and training diagnostics.
+3. Add dropout-on dense-vs-distributed diagnostics using the tracked streams.
+4. Start RL core utilities with log-probs, masks, GAE, and PPO losses.
+5. Add a dense tiny PPO example.
 
 This order keeps the already-validated TP path stable while preparing the
 randomness and objective-layer semantics needed for realistic training.

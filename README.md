@@ -40,7 +40,7 @@ the training mechanics explicit.
 
 | Area | Current support | Limitations |
 | --- | --- | --- |
-| Dense GPT training | CPU-runnable tiny GPT, trainer, microbatching, gradient accumulation, activation checkpointing | Educational scale only |
+| Dense GPT training | CPU-runnable tiny GPT, trainer, microbatching, gradient accumulation, activation checkpointing, configurable attention/MLP projection bias | Educational scale only |
 | Fake tensor parallel layers | Single-process MLP, attention, embeddings, LM head, and fake collectives | Local tensors only |
 | Distributed collectives | Optional CPU/Gloo wrappers and experimental CUDA/NCCL rank-local wrappers in `distributed_collectives.py` | Not wired into the main GPT path; normal pytest does not require distributed setup |
 | Distributed module prototypes | CPU/Gloo modules plus an experimental CUDA/NCCL smoke path for the isolated distributed GPT prototype | Prototype-only; main `GPTModel` is still unchanged |

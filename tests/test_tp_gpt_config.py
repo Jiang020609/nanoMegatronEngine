@@ -7,6 +7,12 @@ def test_tensor_parallel_size_defaults_to_one():
     config = GPTConfig()
 
     assert config.tensor_parallel_size == 1
+    assert config.bias is True
+
+
+def test_invalid_bias_type_raises():
+    with pytest.raises(TypeError, match="bias must be bool"):
+        GPTConfig(bias=1)
 
 
 def test_invalid_tensor_parallel_size_raises():

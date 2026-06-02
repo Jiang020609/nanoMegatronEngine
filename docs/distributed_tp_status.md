@@ -27,7 +27,7 @@ parallel behavior remains separate and unchanged.
 | Path | Command | What It Checks | Status |
 | --- | --- | --- | --- |
 | Default tests | `pytest` | Dense path, fake TP path, non-distributed tests, skipped distributed tests by default | Passing locally |
-| CPU/Gloo distributed modules | `NME_RUN_DISTRIBUTED_TESTS=1 pytest tests/test_distributed_collectives.py tests/test_distributed_column_parallel_linear.py tests/test_distributed_row_parallel_linear.py tests/test_distributed_vocab_parallel.py tests/test_distributed_mlp_composition.py tests/test_distributed_qkv_parallel_linear.py tests/test_distributed_attention.py tests/test_distributed_transformer_block.py tests/test_distributed_gpt_forward.py tests/test_distributed_dropout_rng.py` | Rank-local collectives, distributed linear/vocab/QKV/attention/block/GPT forward and backward smoke checks, and opt-in tracked-dropout RNG stream semantics | Passing locally |
+| CPU/Gloo distributed modules | `NME_RUN_DISTRIBUTED_TESTS=1 pytest tests/test_distributed_collectives.py tests/test_distributed_column_parallel_linear.py tests/test_distributed_row_parallel_linear.py tests/test_distributed_vocab_parallel.py tests/test_distributed_mlp_composition.py tests/test_distributed_qkv_parallel_linear.py tests/test_distributed_attention.py tests/test_distributed_transformer_block.py tests/test_distributed_gpt_forward.py tests/test_distributed_dropout_rng.py` | Rank-local collectives, distributed linear/vocab/QKV/attention/block/GPT forward and backward smoke checks, no-bias GPT forward/loss validation, and opt-in tracked-dropout RNG stream semantics | Passing locally |
 | CPU/Gloo MLP composition | `python examples/compare_distributed_mlp.py --spawn 2` | Dense MLP vs distributed column-local GELU plus row-parallel MLP, including input gradients | Passing locally |
 | CUDA/NCCL GPT smoke | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small` | Dense vs distributed GPT forward/loss, backward smoke, replicated gradient sync, local SGD step smoke, activation checkpoint backward smoke | Passed on 4-GPU A800 |
 | CUDA/NCCL GPT gradient and optimizer equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py --preset small` | Dense gradients vs local distributed gradient shards, replicated gradients after explicit sync, and one SGD-updated dense parameter slice vs local distributed shard | Passed on 4-GPU A800: 236/236 checks, max abs error around `1.8e-7` |
@@ -51,6 +51,11 @@ CUDA/NCCL path checks:
   dense parameter slices
 - a 5-step deterministic SGD loop keeps logits, losses, gradient shards,
   replicated gradients, and updated parameter shards aligned with dense slices
+
+On CPU/Gloo, the isolated distributed GPT forward/loss tests cover both the
+default projection-bias configuration and `bias=False` for attention and MLP
+projection linears. LayerNorm bias and the tied LM head behavior remain
+unchanged.
 
 ## Foundational RNG Work
 
@@ -110,6 +115,7 @@ The current prototype does not implement or claim:
 - a full distributed training engine
 - Megatron-LM feature parity
 - dropout-on dense-equivalent distributed training
+- no-bias CUDA/NCCL gradient or training equivalence
 - a production distributed optimizer
 - mixed precision, FP8, or custom CUDA kernels
 - sequence parallelism

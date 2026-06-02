@@ -89,6 +89,42 @@ def test_dense_gpt_logits_match_fake_tp_gpt_logits_after_weight_copy():
     torch.testing.assert_close(tp_loss, dense_loss, atol=1e-6, rtol=1e-5)
 
 
+def test_no_bias_dense_gpt_logits_match_fake_tp_gpt_logits_after_weight_copy():
+    torch.manual_seed(447)
+    dense_config = GPTConfig(
+        vocab_size=32,
+        block_size=8,
+        n_layer=1,
+        n_head=4,
+        n_embd=16,
+        bias=False,
+        dropout=0.0,
+        tensor_parallel_size=1,
+    )
+    tp_config = GPTConfig(
+        vocab_size=32,
+        block_size=8,
+        n_layer=1,
+        n_head=4,
+        n_embd=16,
+        bias=False,
+        dropout=0.0,
+        tensor_parallel_size=2,
+    )
+    dense = GPTModel(dense_config)
+    tp_model = GPTModel(tp_config)
+    copy_dense_gpt_to_tp_gpt(dense, tp_model)
+    dense.eval()
+    tp_model.eval()
+    input_ids = torch.randint(0, dense_config.vocab_size, (2, dense_config.block_size))
+
+    dense_logits, dense_loss = dense(input_ids, targets=input_ids)
+    tp_logits, tp_loss = tp_model(input_ids, targets=input_ids)
+
+    torch.testing.assert_close(tp_logits, dense_logits, atol=1e-6, rtol=1e-5)
+    torch.testing.assert_close(tp_loss, dense_loss, atol=1e-6, rtol=1e-5)
+
+
 def copy_dense_gpt_to_tp_gpt(dense: GPTModel, tp_model: GPTModel) -> None:
     with torch.no_grad():
         copy_dense_embedding_to_tp_embedding(dense.token_embedding, tp_model.token_embedding)
@@ -123,9 +159,8 @@ def copy_dense_attention_to_tp_attention(dense: CausalSelfAttention, tp_attentio
     hidden_size = dense.n_embd
     local_hidden = tp_attention.local_hidden
 
-    for shard_idx, (weight_shard, bias_shard) in enumerate(
-        zip(tp_attention.qkv_weight_shards, tp_attention.qkv_bias_shards)
-    ):
+    bias_shards = tp_attention.qkv_bias_shards
+    for shard_idx, weight_shard in enumerate(tp_attention.qkv_weight_shards):
         q_start = shard_idx * local_hidden
         q_end = (shard_idx + 1) * local_hidden
         k_start = hidden_size + q_start
@@ -143,21 +178,23 @@ def copy_dense_attention_to_tp_attention(dense: CausalSelfAttention, tp_attentio
                 dim=0,
             )
         )
-        bias_shard.copy_(
-            torch.cat(
-                [
-                    dense.qkv.bias[q_start:q_end],
-                    dense.qkv.bias[k_start:k_end],
-                    dense.qkv.bias[v_start:v_end],
-                ],
-                dim=0,
+        if dense.qkv.bias is not None and bias_shards is not None:
+            bias_shards[shard_idx].copy_(
+                torch.cat(
+                    [
+                        dense.qkv.bias[q_start:q_end],
+                        dense.qkv.bias[k_start:k_end],
+                        dense.qkv.bias[v_start:v_end],
+                    ],
+                    dim=0,
+                )
             )
-        )
 
     proj_weight_chunks = split_tensor_along_dim(dense.proj.weight, tp_attention.proj.tp_size, dim=1)
     for shard, chunk in zip(tp_attention.proj.weight_shards, proj_weight_chunks):
         shard.copy_(chunk)
-    tp_attention.proj.bias.copy_(dense.proj.bias)
+    if dense.proj.bias is not None and tp_attention.proj.bias is not None:
+        tp_attention.proj.bias.copy_(dense.proj.bias)
 
 
 def copy_dense_mlp_to_tp_mlp(dense_mlp: MLP, tp_mlp: MLP) -> None:
@@ -174,11 +211,13 @@ def copy_dense_mlp_to_tp_mlp(dense_mlp: MLP, tp_mlp: MLP) -> None:
     first_weight_chunks = split_tensor_along_dim(first_linear.weight, first_tp.tp_size, dim=0)
     for shard, chunk in zip(first_tp.weight_shards, first_weight_chunks):
         shard.copy_(chunk)
-    first_bias_chunks = split_tensor_along_dim(first_linear.bias, first_tp.tp_size, dim=0)
-    for shard, chunk in zip(first_tp.bias_shards, first_bias_chunks):
-        shard.copy_(chunk)
+    if first_linear.bias is not None and first_tp.bias_shards is not None:
+        first_bias_chunks = split_tensor_along_dim(first_linear.bias, first_tp.tp_size, dim=0)
+        for shard, chunk in zip(first_tp.bias_shards, first_bias_chunks):
+            shard.copy_(chunk)
 
     second_weight_chunks = split_tensor_along_dim(second_linear.weight, second_tp.tp_size, dim=1)
     for shard, chunk in zip(second_tp.weight_shards, second_weight_chunks):
         shard.copy_(chunk)
-    second_tp.bias.copy_(second_linear.bias)
+    if second_linear.bias is not None and second_tp.bias is not None:
+        second_tp.bias.copy_(second_linear.bias)

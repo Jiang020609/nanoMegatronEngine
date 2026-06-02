@@ -80,7 +80,7 @@ class DistributedGPTModel(nn.Module):
                     num_heads=config.n_head,
                     block_size=config.block_size,
                     mlp_hidden_size=config.mlp_hidden_size,
-                    bias=True,
+                    bias=config.bias,
                     dropout=config.dropout,
                     collectives=self.collectives,
                     rng_tracker=rng_tracker,

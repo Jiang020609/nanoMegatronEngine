@@ -24,22 +24,32 @@ class CausalSelfAttention(nn.Module):
         self.local_heads = config.n_head // config.tensor_parallel_size
         self.local_hidden = self.local_heads * self.head_dim
         self.dropout_p = config.dropout
+        self.bias = config.bias
 
         if self.tensor_parallel_size == 1:
-            self.qkv = nn.Linear(config.n_embd, 3 * config.n_embd)
-            self.proj = nn.Linear(config.n_embd, config.n_embd)
+            self.qkv = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
+            self.proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
         else:
             # Single-process fake TP: each shard owns local Q, K, and V heads.
             self.qkv_weight_shards = nn.ParameterList(
                 [nn.Parameter(torch.empty(3 * self.local_hidden, config.n_embd)) for _ in range(self.tensor_parallel_size)]
             )
-            self.qkv_bias_shards = nn.ParameterList(
-                [nn.Parameter(torch.empty(3 * self.local_hidden)) for _ in range(self.tensor_parallel_size)]
+            self.qkv_bias_shards = (
+                nn.ParameterList(
+                    [nn.Parameter(torch.empty(3 * self.local_hidden)) for _ in range(self.tensor_parallel_size)]
+                )
+                if config.bias
+                else None
             )
             self._reset_qkv_shards()
             # The output projection consumes local context slices and sums the
             # partial outputs, matching row-parallel semantics in one process.
-            self.proj = RowParallelLinear(config.n_embd, config.n_embd, tp_size=self.tensor_parallel_size)
+            self.proj = RowParallelLinear(
+                config.n_embd,
+                config.n_embd,
+                tp_size=self.tensor_parallel_size,
+                bias=config.bias,
+            )
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
 
@@ -59,7 +69,7 @@ class CausalSelfAttention(nn.Module):
             y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, channels)
         else:
             local_contexts = []
-            for weight, bias in zip(self.qkv_weight_shards, self.qkv_bias_shards):
+            for weight, bias in zip(self.qkv_weight_shards, self._iter_qkv_bias_shards()):
                 local_qkv = F.linear(x, weight, bias)
                 query, key, value = local_qkv.split(self.local_hidden, dim=2)
                 query = self._shape_heads(query, batch_size, seq_len, self.local_heads)
@@ -106,5 +116,11 @@ class CausalSelfAttention(nn.Module):
         bound = 1 / math.sqrt(self.n_embd)
         for weight in self.qkv_weight_shards:
             nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
-        for bias in self.qkv_bias_shards:
-            nn.init.uniform_(bias, -bound, bound)
+        if self.qkv_bias_shards is not None:
+            for bias in self.qkv_bias_shards:
+                nn.init.uniform_(bias, -bound, bound)
+
+    def _iter_qkv_bias_shards(self) -> tuple[torch.Tensor | None, ...]:
+        if self.qkv_bias_shards is None:
+            return tuple(None for _ in range(self.tensor_parallel_size))
+        return tuple(self.qkv_bias_shards)

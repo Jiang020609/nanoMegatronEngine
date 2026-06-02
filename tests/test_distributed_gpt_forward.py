@@ -46,7 +46,9 @@ def _distributed_gpt_worker(rank: int, world_size: int, port: int) -> None:
     try:
         init_distributed_from_env("gloo")
         _assert_dense_gpt_logits_and_loss_match_distributed(world_size)
+        _assert_no_bias_dense_gpt_logits_and_loss_match_distributed(world_size)
         _assert_distributed_gpt_local_shard_summary(world_size)
+        _assert_no_bias_distributed_gpt_local_shard_summary(world_size)
         _assert_replicated_gradient_sync_averages_only_replicated_parameters(world_size)
         _assert_distributed_gpt_activation_checkpointing_smoke(world_size)
         _assert_distributed_gpt_loss_backward_smoke(world_size)
@@ -85,6 +87,43 @@ def _assert_dense_gpt_logits_and_loss_match_distributed(world_size: int) -> None
     dense_logits, dense_loss = dense(input_ids, targets)
     distributed_logits, distributed_loss = distributed(input_ids, targets)
 
+    assert distributed_logits.shape == dense_logits.shape == (2, 5, dense_config.vocab_size)
+    assert dense_loss is not None
+    assert distributed_loss is not None
+    torch.testing.assert_close(distributed_logits, dense_logits, atol=1e-6, rtol=1e-5)
+    torch.testing.assert_close(distributed_loss, dense_loss, atol=1e-6, rtol=1e-5)
+
+
+def _assert_no_bias_dense_gpt_logits_and_loss_match_distributed(world_size: int) -> None:
+    torch.manual_seed(1307)
+    dense_config = _dense_config(bias=False)
+    distributed_config = _distributed_config(world_size=world_size, bias=False)
+    dense = GPTModel(dense_config)
+    dense.eval()
+    distributed = DistributedGPTModel(distributed_config)
+    distributed.eval()
+    distributed.copy_from_dense_(dense)
+
+    input_ids = torch.tensor(
+        [
+            [0, 1, 16, 31, 4],
+            [17, 2, 30, 8, 15],
+        ]
+    )
+    targets = torch.tensor(
+        [
+            [1, 16, 31, 4, 5],
+            [2, 30, 8, 15, 0],
+        ]
+    )
+
+    dense_logits, dense_loss = dense(input_ids, targets)
+    distributed_logits, distributed_loss = distributed(input_ids, targets)
+
+    assert distributed.blocks[0].attn.qkv.bias is None
+    assert distributed.blocks[0].attn.proj.bias is None
+    assert distributed.blocks[0].fc1.bias is None
+    assert distributed.blocks[0].fc2.bias is None
     assert distributed_logits.shape == dense_logits.shape == (2, 5, dense_config.vocab_size)
     assert dense_loss is not None
     assert distributed_loss is not None
@@ -140,6 +179,13 @@ def _assert_distributed_gpt_local_shard_summary(world_size: int) -> None:
         distributed.config.n_embd,
         distributed.config.mlp_hidden_size // world_size,
     )
+
+
+def _assert_no_bias_distributed_gpt_local_shard_summary(world_size: int) -> None:
+    distributed = DistributedGPTModel(_distributed_config(world_size=world_size, bias=False))
+
+    assert "blocks.0.attn.proj.bias" not in distributed.replicated_parameter_names()
+    assert "blocks.0.fc2.bias" not in distributed.replicated_parameter_names()
 
 
 def _assert_replicated_gradient_sync_averages_only_replicated_parameters(world_size: int) -> None:
@@ -300,26 +346,32 @@ def _assert_invalid_sequence_length_raises(world_size: int) -> None:
         distributed(torch.zeros(2, 9, dtype=torch.long))
 
 
-def _dense_config(use_activation_checkpointing: bool = False) -> GPTConfig:
+def _dense_config(use_activation_checkpointing: bool = False, bias: bool = True) -> GPTConfig:
     return GPTConfig(
         vocab_size=32,
         block_size=8,
         n_layer=2,
         n_head=4,
         n_embd=8,
+        bias=bias,
         dropout=0.0,
         use_activation_checkpointing=use_activation_checkpointing,
         tensor_parallel_size=1,
     )
 
 
-def _distributed_config(world_size: int = 2, use_activation_checkpointing: bool = False) -> GPTConfig:
+def _distributed_config(
+    world_size: int = 2,
+    use_activation_checkpointing: bool = False,
+    bias: bool = True,
+) -> GPTConfig:
     return GPTConfig(
         vocab_size=32,
         block_size=8,
         n_layer=2,
         n_head=4,
         n_embd=8,
+        bias=bias,
         dropout=0.0,
         use_activation_checkpointing=use_activation_checkpointing,
         tensor_parallel_size=world_size,
