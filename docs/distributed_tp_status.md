@@ -29,7 +29,7 @@ parallel behavior remains separate and unchanged.
 | Path | Command | What It Checks | Status |
 | --- | --- | --- | --- |
 | Default tests | `pytest` | Dense path, fake TP path, non-distributed tests, skipped distributed tests by default | Passing locally |
-| CPU/Gloo distributed modules | `NME_RUN_DISTRIBUTED_TESTS=1 pytest tests/test_distributed_collectives.py tests/test_distributed_column_parallel_linear.py tests/test_distributed_row_parallel_linear.py tests/test_distributed_vocab_parallel.py tests/test_distributed_mlp_composition.py tests/test_distributed_qkv_parallel_linear.py tests/test_distributed_attention.py tests/test_distributed_transformer_block.py tests/test_distributed_gpt_forward.py tests/test_distributed_dropout_rng.py` | Rank-local collectives, distributed linear/vocab/QKV/attention/block/GPT forward and backward smoke checks, no-bias GPT forward/loss validation, and opt-in tracked-dropout RNG stream semantics | Passing locally |
+| CPU/Gloo distributed modules | `NME_RUN_DISTRIBUTED_TESTS=1 pytest tests/test_distributed_collectives.py tests/test_distributed_column_parallel_linear.py tests/test_distributed_row_parallel_linear.py tests/test_distributed_vocab_parallel.py tests/test_distributed_mlp_composition.py tests/test_distributed_qkv_parallel_linear.py tests/test_distributed_attention.py tests/test_distributed_transformer_block.py tests/test_distributed_gpt_forward.py tests/test_distributed_gpt_factory.py tests/test_distributed_dropout_rng.py tests/test_distributed_gpt_dropout_equivalence.py` | Rank-local collectives, distributed linear/vocab/QKV/attention/block/GPT forward and backward smoke checks, no-bias GPT forward/loss validation, opt-in tracked-dropout RNG stream semantics, and dropout-on dense-reference vs distributed GPT logits/loss/gradient shard checks | Passing locally |
 | CPU/Gloo MLP composition | `python examples/compare_distributed_mlp.py --spawn 2` | Dense MLP vs distributed column-local GELU plus row-parallel MLP, including input gradients | Passing locally |
 | CUDA/NCCL GPT smoke | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small` | Dense vs distributed GPT forward/loss, backward smoke, replicated gradient sync, local SGD step smoke, activation checkpoint backward smoke | Passed on 4-GPU A800 |
 | CUDA/NCCL GPT gradient and optimizer equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py --preset small` | Dense gradients vs local distributed gradient shards, replicated gradients after explicit sync, and one SGD-updated dense parameter slice vs local distributed shard | Passed on 4-GPU A800: 236/236 checks, max abs error around `1.8e-7` |
@@ -77,8 +77,11 @@ distributed attention, transformer block, and GPT prototypes. The opt-in
 CPU/Gloo distributed dropout RNG test checks that rank-local streams can differ
 across tensor-parallel ranks while replicated streams remain identical across
 ranks, and that tracked dropout replays in a distributed transformer block when
-stream states are reset. Dropout-on dense-equivalent distributed training is
-not claimed yet.
+stream states are reset. A separate CPU/Gloo dropout-on GPT diagnostic compares
+the distributed prototype against a dense-parameter reference that uses the same
+rank-local attention streams and replicated residual stream, including logits,
+loss, and local gradient shard checks. CUDA/NCCL dropout-on training equivalence
+is not claimed yet.
 
 ## Latest Strict A800 Check
 
@@ -122,6 +125,7 @@ The current prototype does not implement or claim:
 - a full distributed training engine
 - Megatron-LM feature parity
 - dropout-on dense-equivalent distributed training
+- A800-validated dropout-on CUDA/NCCL gradient or training equivalence
 - A800-validated no-bias CUDA/NCCL gradient or training equivalence
 - a production distributed optimizer
 - mixed precision, FP8, or custom CUDA kernels
@@ -152,6 +156,8 @@ NME_RUN_DISTRIBUTED_TESTS=1 pytest \
   tests/test_distributed_attention.py \
   tests/test_distributed_transformer_block.py \
   tests/test_distributed_gpt_forward.py \
+  tests/test_distributed_gpt_factory.py \
+  tests/test_distributed_gpt_dropout_equivalence.py \
   tests/test_distributed_dropout_rng.py
 ```
 
