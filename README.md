@@ -46,6 +46,7 @@ the training mechanics explicit.
 | Distributed module prototypes | CPU/Gloo modules, explicit isolated distributed GPT factory helpers, plus an experimental CUDA/NCCL smoke path for the isolated distributed GPT prototype | Prototype-only; main `GPTModel` is still unchanged |
 | Collective adapters | Explicit fake shard-list and distributed rank-local adapter boundaries | They document semantics; they do not make the APIs interchangeable |
 | RNG utilities | Process-local named CPU/CUDA RNG state tracker plus optional tracked dropout for isolated distributed prototypes | Dropout-on dense-equivalent distributed training is not claimed yet |
+| RL utilities | Dense/single-process helpers for response action masks, token log-probs, KL penalties, GAE, PPO clipped policy loss, value loss, entropy, and terminal rewards | No rollout loop, value head, PPO trainer, or distributed RL path yet |
 | Accelerators | CUDA is optional for benchmarks and the NCCL smoke example | No custom CUDA, FP8, multi-node orchestration, or GPU requirement for default tests |
 | Performance claims | None | No Megatron-LM parity or speedup claims |
 

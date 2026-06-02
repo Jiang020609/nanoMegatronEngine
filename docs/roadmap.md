@@ -61,11 +61,11 @@ Next targets:
 
 - A800 no-bias CUDA/NCCL gradient and training validation
 - A800 dropout-on CUDA/NCCL diagnostics if GPU time is available
-- RL core utilities with log-probs, masks, GAE, and PPO losses
+- dense/single-process RL core utilities for masks, log-probs, rewards, GAE, and PPO losses
 
 ### A2. Data Parallelism
 
-Status: not implemented.
+Status: in progress.
 
 Planned work:
 
@@ -153,16 +153,24 @@ nano_megatron_engine/rl/
 
 Planned work:
 
-- prompt/response batch data structures
-- action masks for response tokens
-- token log-prob extraction
-- reference-model KL helpers
-- reward shaping utilities
+Implemented so far:
+
+- response action masks
+- next-token log-prob extraction
+- masked KL helper
+- terminal reward placement and token-level KL penalty helper
 - generalized advantage estimation
 - PPO clipped policy loss
 - value loss
 - entropy bonus
+
+Remaining planned work:
+
+- prompt/response batch data structures
+- rollout storage
+- value-head wrapper
 - toy reward functions
+- dense PPO loop example
 
 ### B2. Dense Tiny PPO Loop
 
@@ -192,7 +200,7 @@ meet.
 ## Recommended Near-Term Order
 
 1. Run and record A800 no-bias CUDA/NCCL gradient and training validation.
-2. Start RL core utilities with log-probs, masks, GAE, and PPO losses.
+2. Add prompt/response rollout data structures and a value-head wrapper.
 3. Add a dense tiny PPO example.
 4. Add DP/PP/SP learning prototypes once TP validation is stable.
 5. Add A800 dropout-on CUDA/NCCL diagnostics when GPU time is available.
