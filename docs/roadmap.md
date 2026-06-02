@@ -47,13 +47,14 @@ Implemented so far:
 - isolated distributed GPT model
 - dense-vs-distributed forward, gradient, SGD, and AdamW state validation
 - process-local named CPU/CUDA RNG state tracker
+- process-local dropout determinism check using the RNG tracker
 
 Next targets:
 
-- dropout determinism checks using the lightweight RNG tracker
+- activation checkpointing plus dropout replay checks
+- tensor-parallel rank-local dropout RNG semantics
 - bias/no-bias GPT configuration support
 - no-bias distributed GPT validation
-- tighter activation checkpointing plus dropout checks
 - optional explicit factory for distributed GPT construction
 
 ### A2. Data Parallelism
@@ -184,8 +185,8 @@ meet.
 
 ## Recommended Near-Term Order
 
-1. Add dropout determinism examples and checks using the lightweight RNG tracker.
-2. Integrate RNG checks with activation checkpointing smoke tests.
+1. Integrate RNG checks with activation checkpointing smoke tests.
+2. Define tensor-parallel rank-local dropout RNG semantics.
 3. Add `bias` configuration support and no-bias validation.
 4. Start RL core utilities with log-probs, masks, GAE, and PPO losses.
 5. Add a dense tiny PPO example.

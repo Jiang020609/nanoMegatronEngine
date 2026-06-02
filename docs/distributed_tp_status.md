@@ -56,8 +56,9 @@ CUDA/NCCL path checks:
 
 `RNGStateTracker` provides process-local named CPU/CUDA RNG state capture,
 restore, and fork semantics. This is intended as the foundation for later
-dropout and activation-checkpointing determinism checks. It is not yet wired
-into tensor-parallel dropout semantics.
+dropout and activation-checkpointing determinism checks. `compare_rng_dropout.py`
+checks process-local dropout replay, named-stream advancement, and outer RNG
+restoration. This is not yet wired into tensor-parallel dropout semantics.
 
 ## Latest Strict A800 Check
 
@@ -156,3 +157,9 @@ torchrun --standalone --nproc_per_node=4 \
 
 The CUDA/NCCL commands are single-node prototype validations only. They should
 not be read as multi-node, production-training, or speedup claims.
+
+Run the process-local RNG/dropout determinism check:
+
+```bash
+python examples/compare_rng_dropout.py --device cpu
+```

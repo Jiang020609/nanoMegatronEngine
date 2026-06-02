@@ -72,6 +72,7 @@ python examples/compare_tp_mlp.py
 python examples/compare_tp_attention.py
 python examples/compare_tp_embeddings_lm_head.py
 python examples/inspect_fake_collectives.py
+python examples/compare_rng_dropout.py --device cpu
 python examples/inspect_distributed_collectives.py
 python examples/compare_distributed_parallel_linear.py --spawn 2
 python examples/compare_distributed_vocab_parallel.py --spawn 2
