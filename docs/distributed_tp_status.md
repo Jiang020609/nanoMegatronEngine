@@ -58,7 +58,9 @@ CUDA/NCCL path checks:
 restore, and fork semantics. This is intended as the foundation for later
 dropout and activation-checkpointing determinism checks. `compare_rng_dropout.py`
 checks process-local dropout replay, named-stream advancement, and outer RNG
-restoration. This is not yet wired into tensor-parallel dropout semantics.
+restoration. The activation checkpoint tests also verify dropout replay for a
+checkpointed block against a direct block under the same tracked RNG stream.
+This is not yet wired into tensor-parallel dropout semantics.
 
 ## Latest Strict A800 Check
 

@@ -48,10 +48,10 @@ Implemented so far:
 - dense-vs-distributed forward, gradient, SGD, and AdamW state validation
 - process-local named CPU/CUDA RNG state tracker
 - process-local dropout determinism check using the RNG tracker
+- activation checkpointing plus dropout replay test under a tracked RNG stream
 
 Next targets:
 
-- activation checkpointing plus dropout replay checks
 - tensor-parallel rank-local dropout RNG semantics
 - bias/no-bias GPT configuration support
 - no-bias distributed GPT validation
