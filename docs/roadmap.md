@@ -54,10 +54,10 @@ Implemented so far:
 - GPT projection bias configuration
 - CPU/Gloo no-bias distributed GPT forward/loss validation
 - CUDA/NCCL diagnostic switches for no-bias smoke, gradient, and training runs
+- explicit factory helpers for isolated distributed GPT config/build construction
 
 Next targets:
 
-- optional explicit factory for distributed GPT construction
 - A800 no-bias CUDA/NCCL gradient and training validation
 
 ### A2. Data Parallelism
@@ -188,11 +188,11 @@ meet.
 
 ## Recommended Near-Term Order
 
-1. Add an optional explicit factory for distributed GPT construction.
-2. Run and record A800 no-bias CUDA/NCCL gradient and training validation.
-3. Add dropout-on dense-vs-distributed diagnostics using the tracked streams.
-4. Start RL core utilities with log-probs, masks, GAE, and PPO losses.
-5. Add a dense tiny PPO example.
+1. Run and record A800 no-bias CUDA/NCCL gradient and training validation.
+2. Add dropout-on dense-vs-distributed diagnostics using the tracked streams.
+3. Start RL core utilities with log-probs, masks, GAE, and PPO losses.
+4. Add a dense tiny PPO example.
+5. Add DP/PP/SP learning prototypes once TP validation is stable.
 
 This order keeps the already-validated TP path stable while preparing the
 randomness and objective-layer semantics needed for realistic training.

@@ -18,6 +18,8 @@ The distributed path is an isolated prototype built from rank-local modules:
 - `DistributedCausalSelfAttention`
 - `DistributedTransformerBlock`
 - `DistributedGPTModel`
+- explicit factory helpers for constructing isolated distributed GPT configs
+  and models from dense configs/models
 
 The main `GPTModel` and trainer path are still unchanged. Fake tensor
 parallel behavior remains separate and unchanged.

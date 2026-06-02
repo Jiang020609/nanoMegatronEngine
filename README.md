@@ -43,7 +43,7 @@ the training mechanics explicit.
 | Dense GPT training | CPU-runnable tiny GPT, trainer, microbatching, gradient accumulation, activation checkpointing, configurable attention/MLP projection bias | Educational scale only |
 | Fake tensor parallel layers | Single-process MLP, attention, embeddings, LM head, and fake collectives | Local tensors only |
 | Distributed collectives | Optional CPU/Gloo wrappers and experimental CUDA/NCCL rank-local wrappers in `distributed_collectives.py` | Not wired into the main GPT path; normal pytest does not require distributed setup |
-| Distributed module prototypes | CPU/Gloo modules plus an experimental CUDA/NCCL smoke path for the isolated distributed GPT prototype | Prototype-only; main `GPTModel` is still unchanged |
+| Distributed module prototypes | CPU/Gloo modules, explicit isolated distributed GPT factory helpers, plus an experimental CUDA/NCCL smoke path for the isolated distributed GPT prototype | Prototype-only; main `GPTModel` is still unchanged |
 | Collective adapters | Explicit fake shard-list and distributed rank-local adapter boundaries | They document semantics; they do not make the APIs interchangeable |
 | RNG utilities | Process-local named CPU/CUDA RNG state tracker plus optional tracked dropout for isolated distributed prototypes | Dropout-on dense-equivalent distributed training is not claimed yet |
 | Accelerators | CUDA is optional for benchmarks and the NCCL smoke example | No custom CUDA, FP8, multi-node orchestration, or GPU requirement for default tests |
