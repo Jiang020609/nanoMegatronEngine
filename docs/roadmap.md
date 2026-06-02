@@ -49,10 +49,11 @@ Implemented so far:
 - process-local named CPU/CUDA RNG state tracker
 - process-local dropout determinism check using the RNG tracker
 - activation checkpointing plus dropout replay test under a tracked RNG stream
+- optional tracked dropout in isolated distributed prototypes
+- CPU/Gloo rank-local vs replicated dropout RNG stream checks
 
 Next targets:
 
-- tensor-parallel rank-local dropout RNG semantics
 - bias/no-bias GPT configuration support
 - no-bias distributed GPT validation
 - optional explicit factory for distributed GPT construction
@@ -185,11 +186,11 @@ meet.
 
 ## Recommended Near-Term Order
 
-1. Integrate RNG checks with activation checkpointing smoke tests.
-2. Define tensor-parallel rank-local dropout RNG semantics.
-3. Add `bias` configuration support and no-bias validation.
-4. Start RL core utilities with log-probs, masks, GAE, and PPO losses.
-5. Add a dense tiny PPO example.
+1. Add `bias` configuration support and no-bias validation.
+2. Add dropout-on dense-vs-distributed diagnostics using the tracked streams.
+3. Start RL core utilities with log-probs, masks, GAE, and PPO losses.
+4. Add a dense tiny PPO example.
+5. Add DP/PP/SP learning prototypes once TP validation is stable.
 
 This order keeps the already-validated TP path stable while preparing the
 randomness and objective-layer semantics needed for realistic training.

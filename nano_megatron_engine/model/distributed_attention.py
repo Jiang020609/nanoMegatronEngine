@@ -8,7 +8,12 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from nano_megatron_engine.parallel import DistributedQKVParallelLinear, DistributedRowParallelLinear
+from nano_megatron_engine.parallel import (
+    DistributedQKVParallelLinear,
+    DistributedRowParallelLinear,
+    RNGStateTracker,
+    TrackedDropout,
+)
 from nano_megatron_engine.parallel.collective_adapters import DistributedRankLocalCollectives
 
 
@@ -29,6 +34,9 @@ class DistributedCausalSelfAttention(nn.Module):
         bias: bool = True,
         dropout: float = 0.0,
         collectives: DistributedRankLocalCollectives | None = None,
+        rng_tracker: RNGStateTracker | None = None,
+        attn_dropout_rng_name: str = "attention_dropout",
+        resid_dropout_rng_name: str = "residual_dropout",
     ) -> None:
         super().__init__()
         if hidden_size <= 0:
@@ -80,8 +88,16 @@ class DistributedCausalSelfAttention(nn.Module):
             input_is_parallel=True,
             collectives=self.collectives,
         )
-        self.attn_dropout = nn.Dropout(dropout)
-        self.resid_dropout = nn.Dropout(dropout)
+        self.attn_dropout = TrackedDropout(
+            dropout,
+            rng_tracker=rng_tracker,
+            rng_name=attn_dropout_rng_name,
+        )
+        self.resid_dropout = TrackedDropout(
+            dropout,
+            rng_tracker=rng_tracker,
+            rng_name=resid_dropout_rng_name,
+        )
 
         mask = torch.tril(torch.ones(block_size, block_size, dtype=torch.bool))
         self.register_buffer("causal_mask", mask.view(1, 1, block_size, block_size), persistent=False)

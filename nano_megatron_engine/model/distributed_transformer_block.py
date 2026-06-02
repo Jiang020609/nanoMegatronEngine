@@ -6,7 +6,12 @@ import torch
 from torch import nn
 
 from nano_megatron_engine.model.distributed_attention import DistributedCausalSelfAttention
-from nano_megatron_engine.parallel import DistributedColumnParallelLinear, DistributedRowParallelLinear
+from nano_megatron_engine.parallel import (
+    DistributedColumnParallelLinear,
+    DistributedRowParallelLinear,
+    RNGStateTracker,
+    TrackedDropout,
+)
 from nano_megatron_engine.parallel.collective_adapters import DistributedRankLocalCollectives
 
 
@@ -27,6 +32,10 @@ class DistributedTransformerBlock(nn.Module):
         bias: bool = True,
         dropout: float = 0.0,
         collectives: DistributedRankLocalCollectives | None = None,
+        rng_tracker: RNGStateTracker | None = None,
+        attn_dropout_rng_name: str = "attention_dropout",
+        resid_dropout_rng_name: str = "residual_dropout",
+        mlp_dropout_rng_name: str = "residual_dropout",
     ) -> None:
         super().__init__()
         if hidden_size <= 0:
@@ -81,6 +90,9 @@ class DistributedTransformerBlock(nn.Module):
             bias=bias,
             dropout=dropout,
             collectives=self.collectives,
+            rng_tracker=rng_tracker,
+            attn_dropout_rng_name=attn_dropout_rng_name,
+            resid_dropout_rng_name=resid_dropout_rng_name,
         )
         self.ln_2 = nn.LayerNorm(hidden_size)
         self.fc1 = DistributedColumnParallelLinear(
@@ -98,7 +110,11 @@ class DistributedTransformerBlock(nn.Module):
             input_is_parallel=True,
             collectives=self.collectives,
         )
-        self.mlp_dropout = nn.Dropout(dropout)
+        self.mlp_dropout = TrackedDropout(
+            dropout,
+            rng_tracker=rng_tracker,
+            rng_name=mlp_dropout_rng_name,
+        )
 
     def copy_from_dense_(self, dense_block: nn.Module) -> "DistributedTransformerBlock":
         """Copy replicated LayerNorms and rank-local attention/MLP shards."""

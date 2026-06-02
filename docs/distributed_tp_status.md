@@ -27,7 +27,7 @@ parallel behavior remains separate and unchanged.
 | Path | Command | What It Checks | Status |
 | --- | --- | --- | --- |
 | Default tests | `pytest` | Dense path, fake TP path, non-distributed tests, skipped distributed tests by default | Passing locally |
-| CPU/Gloo distributed modules | `NME_RUN_DISTRIBUTED_TESTS=1 pytest tests/test_distributed_collectives.py tests/test_distributed_column_parallel_linear.py tests/test_distributed_row_parallel_linear.py tests/test_distributed_vocab_parallel.py tests/test_distributed_mlp_composition.py tests/test_distributed_qkv_parallel_linear.py tests/test_distributed_attention.py tests/test_distributed_transformer_block.py tests/test_distributed_gpt_forward.py` | Rank-local collectives, distributed linear/vocab/QKV/attention/block/GPT forward and backward smoke checks | Passing locally |
+| CPU/Gloo distributed modules | `NME_RUN_DISTRIBUTED_TESTS=1 pytest tests/test_distributed_collectives.py tests/test_distributed_column_parallel_linear.py tests/test_distributed_row_parallel_linear.py tests/test_distributed_vocab_parallel.py tests/test_distributed_mlp_composition.py tests/test_distributed_qkv_parallel_linear.py tests/test_distributed_attention.py tests/test_distributed_transformer_block.py tests/test_distributed_gpt_forward.py tests/test_distributed_dropout_rng.py` | Rank-local collectives, distributed linear/vocab/QKV/attention/block/GPT forward and backward smoke checks, and opt-in tracked-dropout RNG stream semantics | Passing locally |
 | CPU/Gloo MLP composition | `python examples/compare_distributed_mlp.py --spawn 2` | Dense MLP vs distributed column-local GELU plus row-parallel MLP, including input gradients | Passing locally |
 | CUDA/NCCL GPT smoke | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_nccl.py --preset small` | Dense vs distributed GPT forward/loss, backward smoke, replicated gradient sync, local SGD step smoke, activation checkpoint backward smoke | Passed on 4-GPU A800 |
 | CUDA/NCCL GPT gradient and optimizer equivalence | `torchrun --standalone --nproc_per_node=4 examples/compare_distributed_gpt_gradients_nccl.py --preset small` | Dense gradients vs local distributed gradient shards, replicated gradients after explicit sync, and one SGD-updated dense parameter slice vs local distributed shard | Passed on 4-GPU A800: 236/236 checks, max abs error around `1.8e-7` |
@@ -60,7 +60,13 @@ dropout and activation-checkpointing determinism checks. `compare_rng_dropout.py
 checks process-local dropout replay, named-stream advancement, and outer RNG
 restoration. The activation checkpoint tests also verify dropout replay for a
 checkpointed block against a direct block under the same tracked RNG stream.
-This is not yet wired into tensor-parallel dropout semantics.
+`TrackedDropout` can optionally use named RNG streams inside the isolated
+distributed attention, transformer block, and GPT prototypes. The opt-in
+CPU/Gloo distributed dropout RNG test checks that rank-local streams can differ
+across tensor-parallel ranks while replicated streams remain identical across
+ranks, and that tracked dropout replays in a distributed transformer block when
+stream states are reset. Dropout-on dense-equivalent distributed training is
+not claimed yet.
 
 ## Latest Strict A800 Check
 
@@ -103,7 +109,7 @@ The current prototype does not implement or claim:
 - wiring into the main `GPTModel` path
 - a full distributed training engine
 - Megatron-LM feature parity
-- dropout RNG tracking integrated across tensor-parallel ranks
+- dropout-on dense-equivalent distributed training
 - a production distributed optimizer
 - mixed precision, FP8, or custom CUDA kernels
 - sequence parallelism
@@ -132,7 +138,8 @@ NME_RUN_DISTRIBUTED_TESTS=1 pytest \
   tests/test_distributed_qkv_parallel_linear.py \
   tests/test_distributed_attention.py \
   tests/test_distributed_transformer_block.py \
-  tests/test_distributed_gpt_forward.py
+  tests/test_distributed_gpt_forward.py \
+  tests/test_distributed_dropout_rng.py
 ```
 
 Run the CUDA/NCCL strict gradient and optimizer equivalence check:

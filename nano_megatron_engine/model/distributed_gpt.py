@@ -15,6 +15,8 @@ from nano_megatron_engine.parallel import (
     DistributedColumnParallelLinear,
     DistributedQKVParallelLinear,
     DistributedRowParallelLinear,
+    RNGStateTracker,
+    TrackedDropout,
     VocabParallelEmbedding,
     VocabParallelLMHead,
 )
@@ -35,6 +37,11 @@ class DistributedGPTModel(nn.Module):
         self,
         config: GPTConfig,
         collectives: DistributedRankLocalCollectives | None = None,
+        rng_tracker: RNGStateTracker | None = None,
+        embedding_dropout_rng_name: str = "residual_dropout",
+        attn_dropout_rng_name: str = "attention_dropout",
+        resid_dropout_rng_name: str = "residual_dropout",
+        mlp_dropout_rng_name: str = "residual_dropout",
     ) -> None:
         super().__init__()
         self.config = config
@@ -61,7 +68,11 @@ class DistributedGPTModel(nn.Module):
             collectives=self.collectives,
         )
         self.position_embedding = nn.Embedding(config.block_size, config.n_embd)
-        self.dropout = nn.Dropout(config.dropout)
+        self.dropout = TrackedDropout(
+            config.dropout,
+            rng_tracker=rng_tracker,
+            rng_name=embedding_dropout_rng_name,
+        )
         self.blocks = nn.ModuleList(
             [
                 DistributedTransformerBlock(
@@ -72,6 +83,10 @@ class DistributedGPTModel(nn.Module):
                     bias=True,
                     dropout=config.dropout,
                     collectives=self.collectives,
+                    rng_tracker=rng_tracker,
+                    attn_dropout_rng_name=attn_dropout_rng_name,
+                    resid_dropout_rng_name=resid_dropout_rng_name,
+                    mlp_dropout_rng_name=mlp_dropout_rng_name,
                 )
                 for _ in range(config.n_layer)
             ]

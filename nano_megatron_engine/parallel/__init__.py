@@ -33,6 +33,7 @@ from nano_megatron_engine.parallel.fake_tp import (
 )
 from nano_megatron_engine.parallel.row_parallel_linear import RowParallelLinear
 from nano_megatron_engine.parallel.rng import RNGState, RNGStateTracker, capture_rng_state, restore_rng_state
+from nano_megatron_engine.parallel.tracked_dropout import TrackedDropout, make_rank_local_rng_tracker
 from nano_megatron_engine.parallel.vocab_parallel_embedding import VocabParallelEmbedding
 from nano_megatron_engine.parallel.vocab_parallel_lm_head import VocabParallelLMHead
 
@@ -48,6 +49,7 @@ __all__ = [
     "RNGState",
     "RNGStateTracker",
     "ShardListCollectiveProtocol",
+    "TrackedDropout",
     "VocabParallelEmbedding",
     "VocabParallelLMHead",
     "distributed_all_gather",
@@ -64,6 +66,7 @@ __all__ = [
     "init_distributed_from_env",
     "is_distributed_available",
     "is_distributed_initialized",
+    "make_rank_local_rng_tracker",
     "partition_range",
     "restore_rng_state",
     "split_tensor_along_dim",
